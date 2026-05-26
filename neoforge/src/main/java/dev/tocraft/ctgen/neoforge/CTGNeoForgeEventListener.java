@@ -4,11 +4,14 @@ import dev.tocraft.ctgen.data.BiomeImageRegistry;
 import dev.tocraft.ctgen.data.HeightImageRegistry;
 import dev.tocraft.ctgen.impl.CTGCommand;
 import dev.tocraft.ctgen.impl.network.SyncMapPacket;
+import dev.tocraft.ctgen.rivers.RiverNetworkLoader;
+import dev.tocraft.ctgen.roads.RoadNetworkLoader;
+import dev.tocraft.ctgen.underground.UndergroundBiomeLoader;
 import dev.tocraft.ctgen.worldgen.MapBasedBiomeSource;
 import dev.tocraft.ctgen.worldgen.MapBasedChunkGenerator;
 import dev.tocraft.ctgen.worldgen.noise.CTGAboveSurfaceCondition;
+import dev.tocraft.ctgen.worldgen.noise.CTGTemperatureCondition;
 import net.minecraft.core.registries.Registries;
-import net.minecraft.world.level.biome.Biome;
 import net.neoforged.bus.api.IEventBus;
 import net.neoforged.neoforge.common.NeoForge;
 import net.neoforged.neoforge.event.AddReloadListenerEvent;
@@ -32,6 +35,9 @@ public final class CTGNeoForgeEventListener {
     private static void addReloadListenerEvent(@NotNull AddReloadListenerEvent event) {
         event.addListener(new BiomeImageRegistry());
         event.addListener(new HeightImageRegistry());
+        event.addListener(new RoadNetworkLoader());
+        event.addListener(new UndergroundBiomeLoader());
+        event.addListener(new RiverNetworkLoader());
     }
 
     private static void registerCommands(@NotNull RegisterCommandsEvent event) {
@@ -39,12 +45,12 @@ public final class CTGNeoForgeEventListener {
     }
 
     private static void register(@NotNull RegisterEvent event) {
-        // generic stuff
         event.register(Registries.BIOME_SOURCE, helper -> helper.register(MapBasedBiomeSource.ID, MapBasedBiomeSource.CODEC));
         event.register(Registries.CHUNK_GENERATOR, helper -> helper.register(MapBasedChunkGenerator.ID, MapBasedChunkGenerator.CODEC));
-
-        // surface rules
-        event.register(Registries.MATERIAL_CONDITION, helper -> CTGAboveSurfaceCondition.register(helper::register));
+        event.register(Registries.MATERIAL_CONDITION, helper -> {
+            CTGAboveSurfaceCondition.register(helper::register);
+            CTGTemperatureCondition.register(helper::register);
+        });
     }
 
     private static void registerPayload(@NotNull RegisterPayloadHandlersEvent event) {

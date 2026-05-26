@@ -10,7 +10,9 @@
     "SurfaceSystemMixin",
     "VanillaRegistriesMixin",
     "WorldCarverMixin",
-    "impl.SendMapToPlayerMixin"
+    "impl.SendMapToPlayerMixin",
+    "DisableStructuresMixin",
+    "DisableFeaturesMixin"
   ],
   "client": [
   ],

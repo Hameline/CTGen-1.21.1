@@ -29,20 +29,22 @@ public class SyncMapPacket implements CustomPacketPayload {
     private final int yOffset;
     private final int mapWidth;
     private final int mapHeight;
+    private final int scale;
 
     @ApiStatus.Internal
-    public SyncMapPacket(@Nullable ResourceLocation mapId, int xOffset, int yOffset, int mapWidth, int mapHeight) {
+    public SyncMapPacket(@Nullable ResourceLocation mapId, int xOffset, int yOffset, int mapWidth, int mapHeight, int scale) {
         this.mapId = mapId;
         this.xOffset = xOffset;
         this.yOffset = yOffset;
         this.mapWidth = mapWidth;
         this.mapHeight = mapHeight;
+        this.scale = scale;
     }
 
     @Contract(value = " -> new", pure = true)
     @ApiStatus.Internal
     public static @NotNull SyncMapPacket empty() {
-        return new SyncMapPacket(null, -1, -1, -1, -1);
+        return new SyncMapPacket(null, -1, -1, -1, -1, 1);
     }
 
     @ApiStatus.Internal
@@ -83,6 +85,10 @@ public class SyncMapPacket implements CustomPacketPayload {
         return mapWidth;
     }
 
+    public int getScale() {
+        return scale;
+    }
+
     @Override
     public @NotNull Type<? extends CustomPacketPayload> type() {
         return TYPE;
@@ -99,7 +105,8 @@ public class SyncMapPacket implements CustomPacketPayload {
                     int yOffset = buf.readInt();
                     int mapWidth = buf.readInt();
                     int mapHeight = buf.readInt();
-                    return new SyncMapPacket(mapId, xOffset, yOffset, mapWidth, mapHeight);
+                    int scale = buf.readInt();
+                    return new SyncMapPacket(mapId, xOffset, yOffset, mapWidth, mapHeight, scale);
                 } else {
                     return empty();
                 }
@@ -115,6 +122,7 @@ public class SyncMapPacket implements CustomPacketPayload {
                     buf.writeInt(payload.yOffset);
                     buf.writeInt(payload.mapWidth);
                     buf.writeInt(payload.mapHeight);
+                    buf.writeInt(payload.scale);
                 }
             }
         };

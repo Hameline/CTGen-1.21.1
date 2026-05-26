@@ -31,7 +31,8 @@ public record CTGAboveSurfaceCondition(int depth) implements SurfaceRules.Condit
         SimplexNoise noise = ((MapInfoAccessor) (Object) surfaceRuleContext).ctgen$getNoise();
         double elevation;
         if (settings != null && noise != null) {
-            elevation = settings.getHeight(noise, surfaceRuleContext.blockX >> 2, surfaceRuleContext.blockZ);
+            // fix: both X and Z must be shifted >> 2 to convert from block to noise coords
+            elevation = settings.getHeight(noise, surfaceRuleContext.blockX >> 2, surfaceRuleContext.blockZ >> 2);
         } else {
             elevation = -1;
         }

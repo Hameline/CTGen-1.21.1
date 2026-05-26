@@ -1,6 +1,7 @@
 package dev.tocraft.ctgen.mixin;
 
 import com.mojang.datafixers.DataFixer;
+import dev.tocraft.ctgen.worldgen.MapBasedBiomeSource;
 import dev.tocraft.ctgen.worldgen.MapBasedChunkGenerator;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.server.level.ChunkMap;

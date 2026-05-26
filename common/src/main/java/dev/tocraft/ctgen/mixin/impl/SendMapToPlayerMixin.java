@@ -30,7 +30,8 @@ public abstract class SendMapToPlayerMixin {
             int yOffset = settings.yOffset(0);
             int mapWidth = settings.getMapWidth();
             int mapHeight = settings.getMapHeight();
-            packet = new SyncMapPacket(mapId, xOffset, yOffset, mapWidth, mapHeight);
+            int scale = settings.getScale();
+            packet = new SyncMapPacket(mapId, xOffset, yOffset, mapWidth, mapHeight, scale);
         } else {
             packet = SyncMapPacket.empty();
         }

@@ -15,9 +15,24 @@ public class MapSettingsBuilder {
     private List<Holder<Zone>> zones;
     private Holder<Zone> defaultBiome;
     private int transition = 16;
+    private int scale = 1;
     private @NotNull Optional<Integer> spawnX = Optional.empty();
     private @NotNull Optional<Integer> spawnY = Optional.empty();
     private Holder<NoiseGeneratorSettings> noiseGenSettings;
+    private double borderNoise = 0.0;
+
+    private List<ResourceLocation> disabledStructureSets = List.of();
+    private List<ResourceLocation> disabledFeatures = List.of();
+
+    public MapSettingsBuilder setDisabledStructureSets(List<ResourceLocation> disabledStructureSets) {
+        this.disabledStructureSets = disabledStructureSets;
+        return this;
+    }
+
+    public MapSettingsBuilder setDisabledFeatures(List<ResourceLocation> disabledFeatures) {
+        this.disabledFeatures = disabledFeatures;
+        return this;
+    }
 
     public MapSettingsBuilder setMapId(ResourceLocation mapId) {
         this.mapId = mapId;
@@ -36,6 +51,11 @@ public class MapSettingsBuilder {
 
     public MapSettingsBuilder setTransition(int transition) {
         this.transition = transition;
+        return this;
+    }
+
+    public MapSettingsBuilder setScale(int scale) {
+        this.scale = scale;
         return this;
     }
 
@@ -64,7 +84,12 @@ public class MapSettingsBuilder {
         return this;
     }
 
+    public MapSettingsBuilder setBorderNoise(double borderNoise) {
+        this.borderNoise = borderNoise;
+        return this;
+    }
+
     public MapSettings build() {
-        return new MapSettings(mapId, zones, defaultBiome, transition, spawnX, spawnY, noiseGenSettings);
+        return new MapSettings(mapId, zones, defaultBiome, transition, scale, borderNoise, spawnX, spawnY, noiseGenSettings, disabledStructureSets, disabledFeatures);
     }
 }

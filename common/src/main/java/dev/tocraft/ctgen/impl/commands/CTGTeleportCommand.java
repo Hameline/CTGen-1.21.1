@@ -65,8 +65,8 @@ public class CTGTeleportCommand {
         if (level.getChunkSource().getGenerator() instanceof MapBasedChunkGenerator generator) {
             MapSettings settings = generator.getSettings();
 
-            int x = ((int) dest.x) - settings.xOffset(0) << 2;
-            int z = ((int) dest.y) - settings.yOffset(0) << 2;
+            int x = settings.pixelToBlockX((int) dest.x);
+            int z = settings.pixelToBlockZ((int) dest.y);
             int y = level.getChunk(x >> 4, z >> 4).getHeight(Heightmap.Types.WORLD_SURFACE_WG, x, z) + 1;
             BlockPos pos = new BlockPos(x, y, z);
 
@@ -105,7 +105,6 @@ public class CTGTeleportCommand {
             Entity entity,
             ServerLevel level,
             BlockPos pos
-
     ) throws CommandSyntaxException {
         if (!Level.isInSpawnableBounds(pos)) {
             throw INVALID_POSITION.create();

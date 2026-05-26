@@ -5,16 +5,31 @@ import net.minecraft.world.level.biome.Biome;
 import org.jetbrains.annotations.NotNull;
 
 import java.awt.*;
+import java.util.ArrayList;
+import java.util.List;
 
-@SuppressWarnings({"unused"})
+@SuppressWarnings("unused")
 public class ZoneBuilder {
-    private Holder<Biome> biome;
+    private final List<Zone.BiomeEntry> biomes = new ArrayList<>();
     private int color;
     private double terrainModifier = Zone.DEFAULT_TERRAIN_MODIFIER;
     private double pixelWeight = Zone.DEFAULT_PIXEL_WEIGHT;
+    private int blobScale = Zone.DEFAULT_BLOB_SCALE;
 
+    /**
+     * Add a biome with a weight. Weights are relative — they don't need to sum to 1.
+     */
+    public ZoneBuilder addBiome(Holder<Biome> biome, double weight) {
+        this.biomes.add(new Zone.BiomeEntry(biome, weight));
+        return this;
+    }
+
+    /**
+     * Convenience method for a single biome zone.
+     */
     public ZoneBuilder setBiome(Holder<Biome> biome) {
-        this.biome = biome;
+        this.biomes.clear();
+        this.biomes.add(new Zone.BiomeEntry(biome, 1.0));
         return this;
     }
 
@@ -38,7 +53,12 @@ public class ZoneBuilder {
         return this;
     }
 
+    public ZoneBuilder setBlobScale(int blobScale) {
+        this.blobScale = blobScale;
+        return this;
+    }
+
     public Zone build() {
-        return new Zone(biome, color, terrainModifier, pixelWeight);
+        return new Zone(biomes, color, terrainModifier, pixelWeight, blobScale);
     }
 }
