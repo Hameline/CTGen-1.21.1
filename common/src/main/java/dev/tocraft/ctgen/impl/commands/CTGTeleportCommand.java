@@ -1,0 +1,126 @@
+package dev.tocraft.ctgen.impl.commands;
+
+import com.mojang.brigadier.exceptions.CommandSyntaxException;
+import com.mojang.brigadier.exceptions.SimpleCommandExceptionType;
+import com.mojang.brigadier.tree.LiteralCommandNode;
+import dev.tocraft.ctgen.impl.CTGCommand;
+import dev.tocraft.ctgen.worldgen.MapBasedChunkGenerator;
+import net.minecraft.commands.CommandSourceStack;
+import net.minecraft.commands.Commands;
+import net.minecraft.commands.arguments.EntityArgument;
+import net.minecraft.commands.arguments.coordinates.Vec2Argument;
+import net.minecraft.core.BlockPos;
+import net.minecraft.network.chat.Component;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.PathfinderMob;
+import net.minecraft.world.level.Level;
+import net.minecraft.world.level.levelgen.Heightmap;
+import net.minecraft.world.phys.Vec2;
+import org.jetbrains.annotations.NotNull;
+
+import java.util.Collection;
+import java.util.Collections;
+import java.util.HashSet;
+
+public class CTGTeleportCommand {
+    private static final SimpleCommandExceptionType INVALID_POSITION = new SimpleCommandExceptionType(
+            Component.translatable("commands.teleport.invalidPosition"));
+
+    public static void register(@NotNull LiteralCommandNode<CommandSourceStack> rootNode) {
+        LiteralCommandNode<CommandSourceStack> teleportNode =
+                Commands.literal("teleport")
+                        .requires(source -> source.hasPermission(2))
+                        .then(
+                                Commands.argument("coords", Vec2Argument.vec2())
+                                        .executes(ctx -> teleportToPos(
+                                                ctx.getSource(),
+                                                Collections.singleton(ctx.getSource().getEntityOrException()),
+                                                ctx.getSource().getLevel(),
+                                                Vec2Argument.getVec2(ctx, "coords")
+                                        ))
+                        )
+                        .then(
+                                Commands.argument("targets", EntityArgument.entities())
+                                        .then(
+                                                Commands.argument("coords", Vec2Argument.vec2())
+                                                        .executes(ctx -> teleportToPos(
+                                                                ctx.getSource(),
+                                                                EntityArgument.getEntities(ctx, "targets"),
+                                                                ctx.getSource().getLevel(),
+                                                                Vec2Argument.getVec2(ctx, "coords")
+                                                        ))
+                                        )
+                        ).build();
+
+        rootNode.addChild(teleportNode);
+    }
+
+    private static int teleportToPos(
+            CommandSourceStack source,
+            Collection<? extends Entity> targets,
+            @NotNull ServerLevel level,
+            Vec2 dest
+    ) throws CommandSyntaxException {
+        if (!(level.getChunkSource().getGenerator() instanceof MapBasedChunkGenerator)) {
+            throw CTGCommand.INVALID_CHUNK_GENERATOR.create();
+        }
+
+        // dest is now world block coordinates — no pixel conversion needed
+        int x = (int) dest.x;
+        int z = (int) dest.y;
+        int y = level.getChunk(x >> 4, z >> 4)
+                .getHeight(Heightmap.Types.WORLD_SURFACE_WG, x, z) + 1;
+        BlockPos pos = new BlockPos(x, y, z);
+
+        for (Entity entity : targets) {
+            performTeleport(entity, level, pos);
+        }
+
+        Component coords = Component.translatable("ctgen.coordinates", x, z);
+        if (targets.size() == 1) {
+            source.sendSuccess(
+                    () -> Component.translatable(
+                            "ctgen.commands.teleport.success.location.single",
+                            targets.iterator().next().getDisplayName(),
+                            coords
+                    ),
+                    true
+            );
+        } else {
+            final int count = targets.size();
+            source.sendSuccess(
+                    () -> Component.translatable(
+                            "ctgen.commands.teleport.success.location.multiple",
+                            count,
+                            coords
+                    ),
+                    true
+            );
+        }
+
+        return targets.size();
+    }
+
+    private static void performTeleport(
+            Entity entity,
+            ServerLevel level,
+            BlockPos pos
+    ) throws CommandSyntaxException {
+        if (!Level.isInSpawnableBounds(pos)) {
+            throw INVALID_POSITION.create();
+        }
+
+        if (entity.teleportTo(level, pos.getX(), pos.getY(), pos.getZ(),
+                new HashSet<>(), entity.getYRot(), entity.getXRot(), true)) {
+            if (!(entity instanceof LivingEntity livingEntity) || !livingEntity.isFallFlying()) {
+                entity.setDeltaMovement(entity.getDeltaMovement().multiply(1.0, 0.0, 1.0));
+                entity.setOnGround(true);
+            }
+            if (entity instanceof PathfinderMob pathfinderMob) {
+                pathfinderMob.getNavigation().stop();
+            }
+        }
+    }
+}
