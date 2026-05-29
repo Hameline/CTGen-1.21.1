@@ -22,7 +22,6 @@ import org.jetbrains.annotations.NotNull;
 
 import java.util.Collection;
 import java.util.Collections;
-import java.util.HashSet;
 
 public class CTGTeleportCommand {
     private static final SimpleCommandExceptionType INVALID_POSITION = new SimpleCommandExceptionType(
@@ -113,7 +112,7 @@ public class CTGTeleportCommand {
         }
 
         if (entity.teleportTo(level, pos.getX(), pos.getY(), pos.getZ(),
-                new HashSet<>(), entity.getYRot(), entity.getXRot(), true)) {
+                Collections.emptySet(), entity.getYRot(), entity.getXRot())) {
             if (!(entity instanceof LivingEntity livingEntity) || !livingEntity.isFallFlying()) {
                 entity.setDeltaMovement(entity.getDeltaMovement().multiply(1.0, 0.0, 1.0));
                 entity.setOnGround(true);

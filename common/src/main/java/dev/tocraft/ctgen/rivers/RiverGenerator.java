@@ -283,7 +283,7 @@ public class RiverGenerator {
                     double normalizedDist = minDist / halfWidth;
                     double depthFraction = (1.0 - (normalizedDist * normalizedDist)) * getDepthVariation(x, z);
                     int targetY = (int) Math.floor(seaLevel - maxDepth * depthFraction);
-                    targetY = Math.max(targetY, chunk.getMinY() + 1);
+                    targetY = Math.max(targetY, chunk.getMinBuildHeight() + 1);
 
                     // carve down to targetY
                     for (int y = naturalY; y > targetY; y--) {
@@ -407,11 +407,11 @@ public class RiverGenerator {
         int worldX = chunk.getPos().getMinBlockX() + localX;
         int worldZ = chunk.getPos().getMinBlockZ() + localZ;
         BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
-        for (int y = chunk.getMaxY() - 1; y >= chunk.getMinY(); y--) {
+        for (int y = chunk.getMaxBuildHeight() - 1; y >= chunk.getMinBuildHeight(); y--) {
             pos.set(worldX, y, worldZ);
             if (!chunk.getBlockState(pos).isAir()) return y;
         }
-        return chunk.getMinY();
+        return chunk.getMinBuildHeight();
     }
 
     private static boolean isTreeBlock(@NotNull BlockState state) {

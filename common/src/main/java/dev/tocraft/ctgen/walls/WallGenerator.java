@@ -424,13 +424,13 @@ public class WallGenerator {
         int worldX = chunk.getPos().getMinBlockX() + localX;
         int worldZ = chunk.getPos().getMinBlockZ() + localZ;
         BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
-        for (int y = chunk.getMaxY() - 1; y >= chunk.getMinY(); y--) {
+        for (int y = chunk.getMaxBuildHeight() - 1; y >= chunk.getMinBuildHeight(); y--) {
             pos.set(worldX, y, worldZ);
             BlockState state = chunk.getBlockState(pos);
             if (!state.isAir() && !state.is(BlockTags.LEAVES) && !state.is(BlockTags.LOGS)) {
                 return y;
             }
         }
-        return chunk.getMinY();
+        return chunk.getMinBuildHeight();
     }
 }

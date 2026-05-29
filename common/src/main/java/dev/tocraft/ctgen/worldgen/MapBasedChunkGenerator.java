@@ -29,6 +29,7 @@ import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.chunk.ChunkAccess;
 import net.minecraft.world.level.chunk.ChunkGenerator;
 import net.minecraft.world.level.levelgen.*;
+import net.minecraft.world.level.levelgen.GenerationStep.Carving;
 import net.minecraft.world.level.levelgen.blending.Blender;
 import net.minecraft.world.level.levelgen.synth.SimplexNoise;
 import org.jetbrains.annotations.ApiStatus;
@@ -70,7 +71,7 @@ public class MapBasedChunkGenerator extends ChunkGenerator {
     }
 
     @Override
-    public void applyCarvers(WorldGenRegion chunkRegion, long seed, RandomState noiseConfig, BiomeManager biomeAccess, StructureManager structureAccessor, ChunkAccess chunk) {
+    public void applyCarvers(WorldGenRegion chunkRegion, long seed, RandomState noiseConfig, BiomeManager biomeAccess, StructureManager structureAccessor, ChunkAccess chunk, Carving carving) {
         setNoise(noiseConfig);
 
         // create noise chunk so modern carvers can sample density functions
@@ -87,7 +88,7 @@ public class MapBasedChunkGenerator extends ChunkGenerator {
                 )
         );
 
-        delegate.applyCarvers(chunkRegion, seed, noiseConfig, biomeAccess, structureAccessor, chunk);
+        delegate.applyCarvers(chunkRegion, seed, noiseConfig, biomeAccess, structureAccessor, chunk, carving);
     }
 
     @Override
@@ -97,7 +98,7 @@ public class MapBasedChunkGenerator extends ChunkGenerator {
             return;
         }
         WorldGenerationContext heightContext = new WorldGenerationContext(this, region);
-        this.buildSurface(chunk, heightContext, noiseConfig, structures, region.getBiomeManager(), region.registryAccess().lookupOrThrow(Registries.BIOME), Blender.of(region));
+        this.buildSurface(chunk, heightContext, noiseConfig, structures, region.getBiomeManager(), biomeRegistry(region), Blender.of(region));
 
         // place snow layers on top of CTGen-placed snow blocks
         // this runs after all surface rules so it catches snow blocks from our temperature system
@@ -107,7 +108,7 @@ public class MapBasedChunkGenerator extends ChunkGenerator {
             for (int z = 0; z < 16; z++) {
                 int worldX = chunk.getPos().getMinBlockX() + x;
                 int worldZ = chunk.getPos().getMinBlockZ() + z;
-                for (int y = chunk.getMaxY() - 1; y >= chunk.getMinY(); y--) {
+                for (int y = chunk.getMaxBuildHeight() - 1; y >= chunk.getMinBuildHeight(); y--) {
                     pos.set(worldX, y, worldZ);
                     BlockState state = chunk.getBlockState(pos);
                     if (state.isAir()) continue;
@@ -133,6 +134,11 @@ public class MapBasedChunkGenerator extends ChunkGenerator {
         NoiseChunk chunkNoiseSampler = chunk.getOrCreateNoiseChunk(chunk3 -> this.createChunkNoiseSampler(chunkGeneratorSettings, chunk3, structureAccessor, blender, noiseConfig));
         ((SurfaceBuilderAccess) noiseConfig.surfaceSystem()).ctgen$buildSurface(noiseConfig, biomeAccess, biomeRegistry, chunkGeneratorSettings.useLegacyRandomSource(), heightContext, chunk, chunkNoiseSampler, chunkGeneratorSettings.surfaceRule(), this::getSettings, () -> this.noise);
 
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Registry<Biome> biomeRegistry(WorldGenRegion region) {
+        return (Registry<Biome>) (Object) region.registryAccess().lookupOrThrow(Registries.BIOME);
     }
 
     private NoiseChunk createChunkNoiseSampler(NoiseGeneratorSettings settings, ChunkAccess chunk, StructureManager world, Blender blender, RandomState noiseConfig) {
@@ -188,8 +194,8 @@ public class MapBasedChunkGenerator extends ChunkGenerator {
 
                     // find the top of the delegate's solid terrain in this column
                     // scan down from CTGen's surface height to find where delegate terrain ends
-                    int delegateTop = chunk.getMinY();
-                    for (int y = floorHeight; y >= chunk.getMinY(); y--) {
+                    int delegateTop = chunk.getMinBuildHeight();
+                    for (int y = floorHeight; y >= chunk.getMinBuildHeight(); y--) {
                         pos.set(worldX, y, worldZ);
                         BlockState state = chunk.getBlockState(pos);
                         if (!state.isAir() && !state.is(Blocks.WATER)) {
@@ -206,7 +212,7 @@ public class MapBasedChunkGenerator extends ChunkGenerator {
                     }
 
                     // clear anything the delegate placed above CTGen's surface
-                    for (int y = floorHeight; y < chunk.getMaxY(); y++) {
+                    for (int y = floorHeight; y < chunk.getMaxBuildHeight(); y++) {
                         pos.set(worldX, y, worldZ);
                         BlockState state = chunk.getBlockState(pos);
                         if (!state.isAir()) {
@@ -300,7 +306,7 @@ public class MapBasedChunkGenerator extends ChunkGenerator {
     @Override
     public void spawnOriginalMobs(@NotNull WorldGenRegion pLevel) {
         ChunkPos chunkpos = pLevel.getCenter();
-        Holder<Biome> holder = pLevel.getBiome(chunkpos.getWorldPosition().atY(pLevel.getMaxY() - 1));
+        Holder<Biome> holder = pLevel.getBiome(chunkpos.getWorldPosition().atY(pLevel.getMaxBuildHeight() - 1));
         WorldgenRandom worldgenrandom = new WorldgenRandom(new LegacyRandomSource(RandomSupport.generateUniqueSeed()));
         worldgenrandom.setDecorationSeed(pLevel.getSeed(), chunkpos.getMinBlockX(), chunkpos.getMinBlockZ());
         NaturalSpawner.spawnMobsForChunkGeneration(pLevel, holder, chunkpos, worldgenrandom);
@@ -333,7 +339,7 @@ public class MapBasedChunkGenerator extends ChunkGenerator {
         int elevation = Math.max((int) (1 + getSettings().getHeight(noise, x, z)), getSeaLevel());
         int seaLevel = this.getSeaLevel();
         if (elevation < this.getMinY())
-            return new NoiseColumn(world.getMinY(), new BlockState[]{Blocks.AIR.defaultBlockState()});
+            return new NoiseColumn(world.getMinBuildHeight(), new BlockState[]{Blocks.AIR.defaultBlockState()});
         if (elevation < seaLevel) {
             return new NoiseColumn(
                     this.getMinY(),

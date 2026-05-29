@@ -251,7 +251,7 @@ public class RoadGenerator {
         }
 
         // fill any air gaps below road
-        for (int y = roadY - 1; y >= chunk.getMinY(); y--) {
+        for (int y = roadY - 1; y >= chunk.getMinBuildHeight(); y--) {
             pos.set(worldX, y, worldZ);
             if (!chunk.getBlockState(pos).isAir()) break;
             chunk.setBlockState(pos, block.defaultBlockState(), false);
@@ -262,7 +262,7 @@ public class RoadGenerator {
         chunk.setBlockState(pos, block.defaultBlockState(), false);
 
         // clear above road surface
-        for (int y = roadY + 1; y < chunk.getMaxY(); y++) {
+        for (int y = roadY + 1; y < chunk.getMaxBuildHeight(); y++) {
             pos.set(worldX, y, worldZ);
             BlockState state = chunk.getBlockState(pos);
             if (state.isAir()) break;
@@ -312,13 +312,13 @@ public class RoadGenerator {
         int worldX = chunk.getPos().getMinBlockX() + localX;
         int worldZ = chunk.getPos().getMinBlockZ() + localZ;
         MutableBlockPos pos = new MutableBlockPos();
-        for (int y = chunk.getMaxY() - 1; y >= chunk.getMinY(); y--) {
+        for (int y = chunk.getMaxBuildHeight() - 1; y >= chunk.getMinBuildHeight(); y--) {
             pos.set(worldX, y, worldZ);
             if (!chunk.getBlockState(pos).isAir()) {
                 return y;
             }
         }
-        return chunk.getMinY();
+        return chunk.getMinBuildHeight();
     }
 
     @Nullable
