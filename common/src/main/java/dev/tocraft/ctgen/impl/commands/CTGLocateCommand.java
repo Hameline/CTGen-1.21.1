@@ -20,6 +20,7 @@ import net.minecraft.network.chat.ClickEvent;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.chat.ComponentUtils;
 import net.minecraft.network.chat.HoverEvent;
+import net.minecraft.resources.ResourceKey;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.phys.Vec3;
@@ -60,10 +61,9 @@ public class CTGLocateCommand {
         if (level.getChunkSource().getGenerator() instanceof MapBasedChunkGenerator generator) {
             Stopwatch stopwatch = Stopwatch.createStarted(Util.TICKER);
 
-            Zone zone = level.registryAccess().lookupOrThrow(CTRegistries.ZONES_KEY).getOptional(zoneId).orElseThrow();
-
             MapSettings settings = generator.getSettings();
-            BufferedImage image = generator.getSettings().getMapImage();
+            BufferedImage image = settings.getMapImage();
+            Zone zone = getZone(level, zoneId);
             int targetColor = zone.color();
 
             Vec3 pos = source.getPosition();
@@ -88,6 +88,14 @@ public class CTGLocateCommand {
         return 1;
     }
 
+    private static Zone getZone(ServerLevel level, ResourceLocation zoneId) {
+        return level.registryAccess()
+                .lookupOrThrow(CTRegistries.ZONES_KEY)
+                .get(ResourceKey.create(CTRegistries.ZONES_KEY, zoneId))
+                .map(holder -> holder.value())
+                .orElseThrow();
+    }
+
     private static final Point[] DIRECTIONS = {
             new Point(4, 0),   // Right
             new Point(0, 4),   // Down
@@ -107,22 +115,22 @@ public class CTGLocateCommand {
         while (!queue.isEmpty()) {
             Point current = queue.poll();
 
-            if (!visited.contains(current)) {
-                visited.add(current);
+            if (!visited.add(current)) {
+                continue;
+            }
 
-                if (current.x >= 0 && current.x < width && current.y >= 0 && current.y < height) {
-                    int currentColor = image.getRGB(current.x, current.y);
+            if (current.x >= 0 && current.x < width && current.y >= 0 && current.y < height) {
+                int currentColor = image.getRGB(current.x, current.y);
 
-                    if (currentColor == targetColor) {
-                        return current;
-                    }
+                if (currentColor == targetColor) {
+                    return current;
+                }
 
-                    for (Point dir : DIRECTIONS) {
-                        int newX = current.x + dir.x;
-                        int newY = current.y + dir.y;
+                for (Point dir : DIRECTIONS) {
+                    int newX = current.x + dir.x;
+                    int newY = current.y + dir.y;
 
-                        queue.add(new Point(newX, newY));
-                    }
+                    queue.add(new Point(newX, newY));
                 }
             }
         }

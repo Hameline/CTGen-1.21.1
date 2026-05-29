@@ -14,6 +14,7 @@ import net.fabricmc.fabric.api.resource.ResourceManagerHelper;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.packs.PackType;
 import net.minecraft.server.packs.resources.ResourceManager;
+import net.minecraft.util.profiling.ProfilerFiller;
 import org.jetbrains.annotations.ApiStatus;
 import org.jetbrains.annotations.NotNull;
 
@@ -32,23 +33,25 @@ public final class CTGFabricClient {
                 (payload, context) -> payload.handle()
         );
 
-
         // register text overlay listener
-        MapOverlayTextLoader overlayTextLoader = new MapOverlayTextLoader();
+        registerReloadListener("text_overlay_loader", new MapOverlayTextLoader());
+    }
+
+    private static void registerReloadListener(String id, MapOverlayTextLoader reloadListener) {
         ResourceManagerHelper.get(PackType.CLIENT_RESOURCES).registerReloadListener(new IdentifiableResourceReloadListener() {
             @Override
             public ResourceLocation getFabricId() {
-                return CTerrainGeneration.id("text_overlay_loader");
+                return CTerrainGeneration.id(id);
             }
 
             @Override
-            public @NotNull CompletableFuture<Void> reload(PreparationBarrier preparationBarrier, ResourceManager resourceManager, Executor backgroundExecutor, Executor gameExecutor) {
-                return overlayTextLoader.reload(preparationBarrier, resourceManager, backgroundExecutor, gameExecutor);
+            public @NotNull CompletableFuture<Void> reload(PreparationBarrier preparationBarrier, ResourceManager resourceManager, ProfilerFiller preparationsProfiler, ProfilerFiller reloadProfiler, Executor backgroundExecutor, Executor gameExecutor) {
+                return reloadListener.reload(preparationBarrier, resourceManager, preparationsProfiler, reloadProfiler, backgroundExecutor, gameExecutor);
             }
 
             @Override
             public @NotNull String getName() {
-                return overlayTextLoader.getName();
+                return reloadListener.getName();
             }
         });
     }

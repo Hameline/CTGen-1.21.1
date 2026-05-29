@@ -12,7 +12,6 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.AbstractWidget;
 import net.minecraft.client.gui.narration.NarrationElementOutput;
-import net.minecraft.client.renderer.RenderType;
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
@@ -308,7 +307,7 @@ public class MapWidget extends AbstractWidget {
         RenderSystem.enableScissor((int) (getX() * scaleFactor), (int) (getY() * scaleFactor), (int) (width * scaleFactor), (int) (height * scaleFactor));
 
         // render actual map
-        context.blit(RenderType::guiTextured, mapTexId, getTextureX(), getTextureY(), 0, 0, zoomedWidth, zoomedHeight, zoomedWidth, zoomedHeight);
+        context.blit(mapTexId, getTextureX(), getTextureY(), 0, 0, zoomedWidth, zoomedHeight, zoomedWidth, zoomedHeight);
 
         if (showPlayer) {
             // calculate pixel pos for the player
@@ -326,8 +325,8 @@ public class MapWidget extends AbstractWidget {
 
             // render player head
             ResourceLocation skin = minecraft.player.getSkin().texture();
-            context.blit(RenderType::guiTextured, skin, playerX - 4, playerY - 4, 8.0f, 8, 8, 8, 8, 8, 64, 64);
-            context.blit(RenderType::guiTextured, skin, playerX - 4, playerY - 4, 40.0f, 8, 8, 8, 8, 8, 64, 64);
+            context.blit(skin, playerX - 4, playerY - 4, 0, 8.0f, 8.0f, 8, 8, 64, 64);
+            context.blit(skin, playerX - 4, playerY - 4, 0, 40.0f, 8.0f, 8, 8, 64, 64);
         }
 
         // render cursor position

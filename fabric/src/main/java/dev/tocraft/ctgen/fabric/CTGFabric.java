@@ -18,6 +18,8 @@ import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.packs.PackType;
 import net.minecraft.server.packs.resources.ResourceManager;
+import net.minecraft.server.packs.resources.SimplePreparableReloadListener;
+import net.minecraft.util.profiling.ProfilerFiller;
 import org.jetbrains.annotations.ApiStatus;
 import org.jetbrains.annotations.NotNull;
 
@@ -34,40 +36,8 @@ public final class CTGFabric implements ModInitializer {
         Registry.register(BuiltInRegistries.CHUNK_GENERATOR, MapBasedChunkGenerator.ID, MapBasedChunkGenerator.CODEC);
 
         // register reload listener
-        BiomeImageRegistry biomeImageRegistry = new BiomeImageRegistry();
-        ResourceManagerHelper.get(PackType.SERVER_DATA).registerReloadListener(new IdentifiableResourceReloadListener() {
-            @Override
-            public ResourceLocation getFabricId() {
-                return CTerrainGeneration.id("biome_map_image_listener");
-            }
-
-            @Override
-            public @NotNull CompletableFuture<Void> reload(PreparationBarrier preparationBarrier, ResourceManager resourceManager, Executor backgroundExecutor, Executor gameExecutor) {
-                return biomeImageRegistry.reload(preparationBarrier, resourceManager, backgroundExecutor, gameExecutor);
-            }
-
-            @Override
-            public @NotNull String getName() {
-                return biomeImageRegistry.getName();
-            }
-        });
-        HeightImageRegistry heightImageRegistry = new HeightImageRegistry();
-        ResourceManagerHelper.get(PackType.SERVER_DATA).registerReloadListener(new IdentifiableResourceReloadListener() {
-            @Override
-            public ResourceLocation getFabricId() {
-                return CTerrainGeneration.id("heightmap_image_listener");
-            }
-
-            @Override
-            public @NotNull CompletableFuture<Void> reload(PreparationBarrier preparationBarrier, ResourceManager resourceManager, Executor backgroundExecutor, Executor gameExecutor) {
-                return heightImageRegistry.reload(preparationBarrier, resourceManager, backgroundExecutor, gameExecutor);
-            }
-
-            @Override
-            public @NotNull String getName() {
-                return heightImageRegistry.getName();
-            }
-        });
+        registerReloadListener("biome_map_image_listener", new BiomeImageRegistry());
+        registerReloadListener("heightmap_image_listener", new HeightImageRegistry());
 
         // register commands
         CommandRegistrationCallback.EVENT.register((dispatcher, context, environment) -> CTGCommand.register(dispatcher, context));
@@ -77,5 +47,24 @@ public final class CTGFabric implements ModInitializer {
 
         // register network packet type
         PayloadTypeRegistry.playS2C().register(SyncMapPacket.TYPE, SyncMapPacket.streamCodec());
+    }
+
+    private static void registerReloadListener(String id, SimplePreparableReloadListener<?> reloadListener) {
+        ResourceManagerHelper.get(PackType.SERVER_DATA).registerReloadListener(new IdentifiableResourceReloadListener() {
+            @Override
+            public ResourceLocation getFabricId() {
+                return CTerrainGeneration.id(id);
+            }
+
+            @Override
+            public @NotNull CompletableFuture<Void> reload(PreparationBarrier preparationBarrier, ResourceManager resourceManager, ProfilerFiller preparationsProfiler, ProfilerFiller reloadProfiler, Executor backgroundExecutor, Executor gameExecutor) {
+                return reloadListener.reload(preparationBarrier, resourceManager, preparationsProfiler, reloadProfiler, backgroundExecutor, gameExecutor);
+            }
+
+            @Override
+            public @NotNull String getName() {
+                return reloadListener.getName();
+            }
+        });
     }
 }

@@ -22,6 +22,7 @@ import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.chunk.ChunkAccess;
 import net.minecraft.world.level.chunk.ChunkGenerator;
 import net.minecraft.world.level.levelgen.*;
+import net.minecraft.world.level.levelgen.GenerationStep.Carving;
 import net.minecraft.world.level.levelgen.blending.Blender;
 import net.minecraft.world.level.levelgen.synth.SimplexNoise;
 import org.jetbrains.annotations.ApiStatus;
@@ -59,9 +60,9 @@ public class MapBasedChunkGenerator extends ChunkGenerator {
     }
 
     @Override
-    public void applyCarvers(WorldGenRegion chunkRegion, long seed, RandomState noiseConfig, BiomeManager biomeAccess, StructureManager structureAccessor, ChunkAccess chunk2) {
+    public void applyCarvers(WorldGenRegion chunkRegion, long seed, RandomState noiseConfig, BiomeManager biomeAccess, StructureManager structureAccessor, ChunkAccess chunk2, Carving carving) {
         setNoise(noiseConfig);
-        delegate.applyCarvers(chunkRegion, seed, noiseConfig, biomeAccess, structureAccessor, chunk2);
+        delegate.applyCarvers(chunkRegion, seed, noiseConfig, biomeAccess, structureAccessor, chunk2, carving);
     }
 
     @Override
@@ -71,13 +72,18 @@ public class MapBasedChunkGenerator extends ChunkGenerator {
             return;
         }
         WorldGenerationContext heightContext = new WorldGenerationContext(this, region);
-        this.buildSurface(chunk, heightContext, noiseConfig, structures, region.getBiomeManager(), region.registryAccess().lookupOrThrow(Registries.BIOME), Blender.of(region));
+        this.buildSurface(chunk, heightContext, noiseConfig, structures, region.getBiomeManager(), biomeRegistry(region), Blender.of(region));
     }
 
     private void buildSurface(ChunkAccess chunk, WorldGenerationContext heightContext, RandomState noiseConfig, StructureManager structureAccessor, BiomeManager biomeAccess, Registry<Biome> biomeRegistry, Blender blender) {
         NoiseGeneratorSettings chunkGeneratorSettings = this.getNoiseGenSettings();
         NoiseChunk chunkNoiseSampler = chunk.getOrCreateNoiseChunk(chunk3 -> this.createChunkNoiseSampler(chunkGeneratorSettings, chunk3, structureAccessor, blender, noiseConfig));
         ((SurfaceBuilderAccess) noiseConfig.surfaceSystem()).ctgen$buildSurface(noiseConfig, biomeAccess, biomeRegistry, chunkGeneratorSettings.useLegacyRandomSource(), heightContext, chunk, chunkNoiseSampler, chunkGeneratorSettings.surfaceRule(), this::getSettings, () -> this.noise);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Registry<Biome> biomeRegistry(WorldGenRegion region) {
+        return (Registry<Biome>) (Object) region.registryAccess().lookupOrThrow(Registries.BIOME);
     }
 
     private NoiseChunk createChunkNoiseSampler(NoiseGeneratorSettings settings, ChunkAccess chunk, StructureManager world, Blender blender, RandomState noiseConfig) {
@@ -123,12 +129,12 @@ public class MapBasedChunkGenerator extends ChunkGenerator {
 
                 for (int y = minY; y < surfaceHeight; y++) {
                     BlockPos pos = chunkPos.getBlockAt(x, y, z);
-                    chunk.setBlockState(pos, defaultBlock , false);
+                    chunk.setBlockState(pos, defaultBlock, false);
                 }
 
                 for (int y = (int) surfaceHeight; y < getSeaLevel(); y++) {
                     BlockPos pos = chunkPos.getBlockAt(x, y, z);
-                    chunk.setBlockState(pos, defaultFluid , false);
+                    chunk.setBlockState(pos, defaultFluid, false);
                 }
             }
         }
@@ -139,7 +145,7 @@ public class MapBasedChunkGenerator extends ChunkGenerator {
     @Override
     public void spawnOriginalMobs(@NotNull WorldGenRegion pLevel) {
         ChunkPos chunkpos = pLevel.getCenter();
-        Holder<Biome> holder = pLevel.getBiome(chunkpos.getWorldPosition().atY(pLevel.getMaxY() - 1));
+        Holder<Biome> holder = pLevel.getBiome(chunkpos.getWorldPosition().atY(this.getMinY() + this.getGenDepth() - 1));
         WorldgenRandom worldgenrandom = new WorldgenRandom(new LegacyRandomSource(RandomSupport.generateUniqueSeed()));
         worldgenrandom.setDecorationSeed(pLevel.getSeed(), chunkpos.getMinBlockX(), chunkpos.getMinBlockZ());
         NaturalSpawner.spawnMobsForChunkGeneration(pLevel, holder, chunkpos, worldgenrandom);
@@ -172,7 +178,7 @@ public class MapBasedChunkGenerator extends ChunkGenerator {
         int elevation = Math.max((int) (1 + getSettings().getHeight(noise, x, z)), getSeaLevel());
         int seaLevel = this.getSeaLevel();
         if (elevation < this.getMinY())
-            return new NoiseColumn(world.getMinY(), new BlockState[]{Blocks.AIR.defaultBlockState()});
+            return new NoiseColumn(this.getMinY(), new BlockState[]{Blocks.AIR.defaultBlockState()});
         if (elevation < seaLevel) {
             return new NoiseColumn(
                     this.getMinY(),

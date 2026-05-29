@@ -1,6 +1,9 @@
 package dev.tocraft.ctgen.data;
 
+import com.google.gson.Gson;
+import com.google.gson.JsonElement;
 import com.mojang.serialization.Codec;
+import com.mojang.serialization.JsonOps;
 import dev.tocraft.ctgen.impl.screen.MapText;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
@@ -14,16 +17,24 @@ import java.util.List;
 import java.util.Map;
 
 @Environment(EnvType.CLIENT)
-public class MapOverlayTextLoader extends SimpleJsonResourceReloadListener<List<MapText>> {
+public class MapOverlayTextLoader extends SimpleJsonResourceReloadListener {
     public static final Map<ResourceLocation, List<MapText>> ENTRIES = new HashMap<>();
+    private static final Gson GSON = new Gson();
+    private static final Codec<List<MapText>> MAP_TEXTS_CODEC = Codec.list(MapText.CODEC);
 
     public MapOverlayTextLoader() {
-        super(Codec.list(MapText.CODEC), "map_texts");
+        super(GSON, "map_texts");
     }
 
     @Override
-    protected void apply(Map<ResourceLocation, List<MapText>> map, ResourceManager resourceManager, ProfilerFiller profiler) {
+    protected void apply(Map<ResourceLocation, JsonElement> map, ResourceManager resourceManager, ProfilerFiller profiler) {
         ENTRIES.clear();
-        ENTRIES.putAll(map);
+        for (Map.Entry<ResourceLocation, JsonElement> entry : map.entrySet()) {
+            ENTRIES.put(entry.getKey(), parse(entry.getValue()));
+        }
+    }
+
+    private static List<MapText> parse(JsonElement json) {
+        return MAP_TEXTS_CODEC.parse(JsonOps.INSTANCE, json).getOrThrow();
     }
 }
