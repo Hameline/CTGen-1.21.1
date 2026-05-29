@@ -1,13 +1,13 @@
 {
-  "key.ctgen_map": "Open map menu",
-  "ctgen.screen.no_texture": "No texture for map image %s was found!",
-  "ctgen.screen.wrong_generation": "CTGen isn't used for Chunk Generation in your current level!",
-  "ctgen.screen.mouse_pos": "Pixel: %s",
+  "key.ctgen_map": "Open Map",
+  "ctgen.screen.no_texture": "No map image found for %s!",
+  "ctgen.screen.wrong_generation": "CTGen chunk generation is not active in this dimension!",
+  "ctgen.screen.mouse_pos": "Coordinates: %s",
   "ctgen.screen.zoom": "Zoom: %s",
-  "ctgen.commands.invalidChunkGenerator": "The current level doesn't use CTGen for chunk generation!",
-  "ctgen.commands.locate.success": "Located %s at pixel pos %s.",
-  "ctgen.commands.locate.failure": "Couldn't locate %s in the current world!",
-  "ctgen.commands.teleport.success.location.multiple": "Teleported %s entities to %s",
-  "ctgen.commands.teleport.success.location.single": "Teleported %s to %s",
+  "ctgen.commands.invalidChunkGenerator": "This dimension does not use CTGen for chunk generation!",
+  "ctgen.commands.locate.success": "Located %s at %s.",
+  "ctgen.commands.locate.failure": "Could not locate %s in this world!",
+  "ctgen.commands.teleport.success.location.multiple": "Teleported %s entities to %s.",
+  "ctgen.commands.teleport.success.location.single": "Teleported %s to %s.",
   "ctgen.coordinates": "%s, %s"
 }

@@ -304,19 +304,34 @@ public class MapWidget extends AbstractWidget {
         }
 
         if (isHovered && showCursorPos) {
+            // convert mouse pixel position to world block coordinates
             int mousePixelX = mousePixelX(mouseX);
             int mousePixelY = mousePixelY(mouseY);
-            Component textPos = Component.translatable("ctgen.screen.mouse_pos", Component.translatable("ctgen.coordinates", mousePixelX, mousePixelY));
+            int worldX = (mousePixelX - pixelOffsetX) * scale * 4;
+            int worldZ = (mousePixelY - pixelOffsetY) * scale * 4;
 
-            int posWidth = minecraft.font.width(textPos);
+            Component textPos = Component.translatable("ctgen.screen.mouse_pos",
+                    Component.translatable("ctgen.coordinates", worldX, worldZ));
+            Component textZoom = Component.translatable("ctgen.screen.zoom",
+                    String.format("%.2f", getReadableZoom()));
+
             PoseStack pose = context.pose();
             pose.pushPose();
-            pose.scale(0.75f, 0.75f, 1);
-            context.drawString(minecraft.font, textPos, (int) (getX() / 0.75f + width / 1.5f - (float) posWidth / 2), (int) ((getY() + (height - (float) height / 8)) / 0.75f), 0xffffff);
+            pose.scale(0.5f, 0.5f, 1f);
 
-            Component textZoom = Component.translatable("ctgen.screen.zoom", String.format("%.2f", getReadableZoom()));
+            // cursor coordinates — bottom center
+            int posWidth = minecraft.font.width(textPos);
+            context.drawString(minecraft.font, textPos,
+                    (int) (getX() / 0.5f + width / 1.0f - (float) posWidth / 2),
+                    (int) ((getY() + (height - (float) height / 8)) / 0.5f),
+                    0xFFFFFF);
+
+            // zoom level — top right
             int zoomWidth = minecraft.font.width(textZoom);
-            context.drawString(minecraft.font, textZoom, (int) (getX() / 0.75f + width / 1.5f - (float) zoomWidth / 2), (int) ((getY() + (height - (float) height / 8)) / 0.75f) + minecraft.font.lineHeight, 0xffffff);
+            context.drawString(minecraft.font, textZoom,
+                    (int) ((getX() + width) / 0.5f - zoomWidth - 4),
+                    (int) ((getY() + 4) / 0.5f),
+                    0xFFFFFF);
 
             pose.popPose();
         }
@@ -467,99 +482,155 @@ public class MapWidget extends AbstractWidget {
     private void renderWaypoint(@NotNull GuiGraphics context, @NotNull MapWaypoint waypoint) {
         double readableZoom = getReadableZoom();
 
-        if (readableZoom < waypoint.minZoom()) return;
-        if (waypoint.maxZoom() != -1 && readableZoom > waypoint.maxZoom()) return;
-
         int screenX = worldToScreenX(waypoint.x());
         int screenY = worldToScreenY(waypoint.z());
 
         if (screenX < getX() || screenX >= getX() + width || screenY < getY() || screenY >= getY() + height) return;
 
-        // dot size — small, scales slightly with zoom but stays compact
-        double zoomScale = Math.min(readableZoom / Math.max(waypoint.minZoom(), 0.01f), 2.0);
-        int outerRadius = (int) Math.round(1 + zoomScale * 0.5);
-        int innerRadius = Math.max(1, outerRadius - 1);
+        // --- dot ---
+        boolean showDot = readableZoom >= waypoint.minZoom()
+                && (waypoint.maxZoom() == -1 || readableZoom <= waypoint.maxZoom());
 
-        // fade opacity
-        float opacity = 1.0f;
-        float fadeRange = Math.max(waypoint.minZoom() * 0.3f, 0.01f);
-        if (readableZoom < waypoint.minZoom() + fadeRange) {
-            opacity = (float) ((readableZoom - waypoint.minZoom()) / fadeRange);
-        }
-        if (waypoint.maxZoom() != -1) {
-            float fadeOutStart = waypoint.maxZoom() * 0.9f;
-            if (readableZoom > fadeOutStart) {
-                opacity = Math.min(opacity, (float) ((waypoint.maxZoom() - readableZoom) / (waypoint.maxZoom() - fadeOutStart)));
+        if (showDot) {
+            double zoomScale = Math.min(readableZoom / Math.max(waypoint.minZoom(), 0.01f), 2.0);
+            int outerRadius = (int) Math.round((1 + zoomScale * 0.8) * 0.7);
+            int innerRadius = Math.max(1, outerRadius - 1);
+
+            float dotOpacity = 1.0f;
+            float fadeRange = Math.max(waypoint.minZoom() * 0.3f, 0.01f);
+            if (readableZoom < waypoint.minZoom() + fadeRange) {
+                dotOpacity = (float) ((readableZoom - waypoint.minZoom()) / fadeRange);
+            }
+            if (waypoint.maxZoom() != -1) {
+                float fadeOutStart = waypoint.maxZoom() * 0.9f;
+                if (readableZoom > fadeOutStart) {
+                    dotOpacity = Math.min(dotOpacity, (float) ((waypoint.maxZoom() - readableZoom)
+                            / (waypoint.maxZoom() - fadeOutStart)));
+                }
+            }
+            dotOpacity = Math.max(0, Math.min(1, dotOpacity));
+
+            if (dotOpacity > 0) {
+                int alpha = (int) (dotOpacity * 255);
+                int outerColor = (alpha << 24) | (waypoint.outerColor() & 0x00FFFFFF);
+                int innerColor = (alpha << 24) | (waypoint.innerColor() & 0x00FFFFFF);
+                drawFilledCircle(context, screenX, screenY, outerRadius, innerRadius, outerColor, innerColor);
             }
         }
-        opacity = Math.max(0, Math.min(1, opacity));
-        if (opacity <= 0) return;
 
-        int alpha = (int) (opacity * 255);
-        int outerColor = (alpha << 24) | (waypoint.outerColor() & 0x00FFFFFF);
-        int innerColor = (alpha << 24) | (waypoint.innerColor() & 0x00FFFFFF);
+        // --- text ---
+        boolean showText = readableZoom >= waypoint.textMinZoom()
+                && (waypoint.textMaxZoom() == -1 || readableZoom <= waypoint.textMaxZoom());
 
-        // draw dot
-        drawFilledCircle(context, screenX, screenY, outerRadius, innerRadius, outerColor, innerColor);
+        if (showText) {
+            float textOpacity = 1.0f;
+            float fadeRange = Math.max(waypoint.textMinZoom() * 0.3f, 0.01f);
+            if (readableZoom < waypoint.textMinZoom() + fadeRange) {
+                textOpacity = (float) ((readableZoom - waypoint.textMinZoom()) / fadeRange);
+            }
+            if (waypoint.textMaxZoom() != -1) {
+                float fadeOutStart = waypoint.textMaxZoom() * 0.9f;
+                if (readableZoom > fadeOutStart) {
+                    textOpacity = Math.min(textOpacity, (float) ((waypoint.textMaxZoom() - readableZoom)
+                            / (waypoint.textMaxZoom() - fadeOutStart)));
+                }
+            }
+            textOpacity = Math.max(0, Math.min(1, textOpacity));
 
-        // draw name centered under the dot on a semi-transparent black background
-        float nameScale = 0.5f;
-        int nameColor = (alpha << 24) | 0xFFFFFF;
-        String name = waypoint.name();
-        int textWidth = minecraft.font.width(name);
+            if (textOpacity > 0) {
+                int alpha = (int) (textOpacity * 255);
+                float nameScale = 0.5f;
+                int nameColor = (alpha << 24) | 0xFFFFFF;
+                String name = waypoint.name();
+                int textWidth = minecraft.font.width(name);
 
-        PoseStack pose = context.pose();
-        pose.pushPose();
-        pose.scale(nameScale, nameScale, 1f);
+                // dot radius for positioning — use 1 if dot is not shown
+                int dotRadius = showDot ? (int) Math.round((1 + Math.min(readableZoom / Math.max(waypoint.minZoom(), 0.01f), 2.0) * 0.8) * 0.7) : 1;
 
-        // center horizontally under the dot
-        int nameX = (int) ((screenX / nameScale) - textWidth / 2f);
-        int nameY = (int) ((screenY + outerRadius + 3) / nameScale);
+                PoseStack pose = context.pose();
+                pose.pushPose();
+                pose.scale(nameScale, nameScale, 1f);
 
-        // semi-transparent black background box
-        int bgAlpha = (int) (opacity * 80);
-        int bgColor = (bgAlpha << 24) | 0x000000;
-        int padding = 2;
-        context.fill(
-                nameX - padding,
-                nameY - padding,
-                nameX + textWidth + padding,
-                nameY + minecraft.font.lineHeight + padding,
-                bgColor
-        );
+                int nameX = (int) ((screenX / nameScale) - textWidth / 2f);
+                int nameY = (int) ((screenY + dotRadius + 3) / nameScale);
 
-        // text on top of background
-        context.drawString(minecraft.font, name, nameX, nameY, nameColor, false);
+                int bgAlpha = (int) (textOpacity * 80);
+                int bgColor = (bgAlpha << 24) | 0x000000;
+                int padding = 2;
+                context.fill(
+                        nameX - padding,
+                        nameY - padding,
+                        nameX + textWidth + padding,
+                        nameY + minecraft.font.lineHeight + padding,
+                        bgColor
+                );
 
-        pose.popPose();
+                context.drawString(minecraft.font, name, nameX, nameY, nameColor, false);
+                pose.popPose();
+            }
+        }
     }
 
     private void drawRiverSpline(@NotNull GuiGraphics context, @NotNull River river) {
-        int samples = river.waypoints().size() * 40;
         int outerColor = 0xFF004499;
         int innerColor = 0xFF0066FF;
 
-        Integer prevScreenX = null;
-        Integer prevScreenY = null;
+        // high resolution sampling — one sample per 2 world blocks of estimated length
+        List<dev.tocraft.ctgen.roads.Waypoint> wps = river.waypoints();
+        double totalDist = 0;
+        for (int i = 0; i < wps.size() - 1; i++) {
+            double dx = wps.get(i + 1).x() - wps.get(i).x();
+            double dz = wps.get(i + 1).z() - wps.get(i).z();
+            totalDist += Math.sqrt(dx * dx + dz * dz);
+        }
+        int samples = Math.max(256, (int) (totalDist / 2));
 
+        // precompute screen positions in double precision — no integer truncation
+        List<double[]> screenPoints = new ArrayList<>(samples + 1);
         for (int i = 0; i <= samples; i++) {
             double t = (double) i / samples;
             double[] pos = river.evaluateSpline(t);
 
-            int screenX = worldToScreenX((int) pos[0]);
-            int screenY = worldToScreenY((int) pos[1]);
+            // same double-precision conversion as the road fix
+            double pixelX = (pos[0] / (scale * 4)) + pixelOffsetX;
+            double pixelZ = (pos[1] / (scale * 4)) + pixelOffsetY;
+            double screenX = getTextureX() + pixelX / mapWidth * zoomedWidth;
+            double screenY = getTextureY() + pixelZ / mapHeight * zoomedHeight;
 
-            if (prevScreenX != null) {
-                // draw solid line between previous and current point
-                int dx = screenX - prevScreenX;
-                int dy = screenY - prevScreenY;
-                double segLen = Math.sqrt(dx * dx + dy * dy);
-                int steps = Math.max(1, (int) segLen);
+            screenPoints.add(new double[]{screenX, screenY});
+        }
 
-                for (int s = 0; s <= steps; s++) {
-                    double frac = (double) s / steps;
-                    int px = (int) (prevScreenX + dx * frac);
-                    int py = (int) (prevScreenY + dy * frac);
+        // walk at fixed pixel intervals — consistent spacing at any zoom
+        double dotSpacing = 3.0; // slightly tighter than roads since rivers are solid lines
+        double accumulated = 0;
+        boolean drawing = true;
+
+        for (int i = 1; i < screenPoints.size(); i++) {
+            double[] prev = screenPoints.get(i - 1);
+            double[] curr = screenPoints.get(i);
+
+            double segDx = curr[0] - prev[0];
+            double segDz = curr[1] - prev[1];
+            double segLen = Math.sqrt(segDx * segDx + segDz * segDz);
+
+            if (segLen < 0.0001) continue;
+
+            double walked = 0;
+            while (walked < segLen) {
+                double remaining = dotSpacing - accumulated;
+                if (walked + remaining > segLen) {
+                    accumulated += segLen - walked;
+                    break;
+                }
+
+                walked += remaining;
+                accumulated = 0;
+                drawing = !drawing;
+
+                if (drawing) {
+                    double frac = walked / segLen;
+                    int px = (int) Math.round(prev[0] + segDx * frac);
+                    int py = (int) Math.round(prev[1] + segDz * frac);
 
                     if (px >= getX() && px < getX() + width && py >= getY() && py < getY() + height) {
                         context.fill(px - 1, py - 1, px + 2, py + 2, outerColor);
@@ -567,9 +638,6 @@ public class MapWidget extends AbstractWidget {
                     }
                 }
             }
-
-            prevScreenX = screenX;
-            prevScreenY = screenY;
         }
     }
 
@@ -628,10 +696,12 @@ public class MapWidget extends AbstractWidget {
             //$$ if (active && visible && button == 1 && minecraft != null && minecraft.player != null && clicked(mouseX, mouseY)) {
             //#endif
             if (isHovered) {
-                int mousePixelX = mousePixelX(mouseX);
-                int mousePixelY = mousePixelY(mouseY);
                 if (minecraft.player.hasPermissions(2)) {
-                    minecraft.player.connection.sendCommand("ctgen teleport " + mousePixelX + " " + mousePixelY);
+                    int mousePixelX = mousePixelX(mouseX);
+                    int mousePixelY = mousePixelY(mouseY);
+                    int worldX = (mousePixelX - pixelOffsetX) * scale * 4;
+                    int worldZ = (mousePixelY - pixelOffsetY) * scale * 4;
+                    minecraft.player.connection.sendCommand("ctgen teleport " + worldX + " " + worldZ);
                     this.playDownSound(minecraft.getSoundManager());
                     active = false;
                     return true;

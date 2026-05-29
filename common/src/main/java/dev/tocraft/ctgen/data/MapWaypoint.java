@@ -11,7 +11,9 @@ public record MapWaypoint(
         int innerColor,
         int outerColor,
         float minZoom,
-        float maxZoom
+        float maxZoom,
+        float textMinZoom,
+        float textMaxZoom
 ) {
     public static final Codec<MapWaypoint> CODEC = RecordCodecBuilder.create(instance -> instance.group(
             Codec.STRING.fieldOf("name").forGetter(MapWaypoint::name),
@@ -20,6 +22,8 @@ public record MapWaypoint(
             Codecs.COLOR.fieldOf("inner_color").forGetter(MapWaypoint::innerColor),
             Codecs.COLOR.fieldOf("outer_color").forGetter(MapWaypoint::outerColor),
             Codec.FLOAT.optionalFieldOf("min_zoom", 0.5f).forGetter(MapWaypoint::minZoom),
-            Codec.FLOAT.optionalFieldOf("max_zoom", -1f).forGetter(MapWaypoint::maxZoom)
+            Codec.FLOAT.optionalFieldOf("max_zoom", -1f).forGetter(MapWaypoint::maxZoom),
+            Codec.FLOAT.optionalFieldOf("text_min_zoom", 0.5f).forGetter(MapWaypoint::textMinZoom),
+            Codec.FLOAT.optionalFieldOf("text_max_zoom", -1f).forGetter(MapWaypoint::textMaxZoom)
     ).apply(instance, instance.stable(MapWaypoint::new)));
 }

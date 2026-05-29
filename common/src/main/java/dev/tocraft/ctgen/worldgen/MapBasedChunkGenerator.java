@@ -8,6 +8,8 @@ import dev.tocraft.ctgen.rivers.RiverGenerator;
 import dev.tocraft.ctgen.rivers.RiverNetworkLoader;
 import dev.tocraft.ctgen.roads.RoadGenerator;
 import dev.tocraft.ctgen.roads.RoadNetworkLoader;
+import dev.tocraft.ctgen.walls.WallGenerator;
+import dev.tocraft.ctgen.walls.WallNetworkLoader;
 import net.minecraft.SharedConstants;
 import net.minecraft.Util;
 import net.minecraft.core.BlockPos;
@@ -123,6 +125,7 @@ public class MapBasedChunkGenerator extends ChunkGenerator {
         // generate roads after surface is built
         RoadNetworkLoader.getNetwork().ifPresent(network -> RoadGenerator.generateRoads(chunk, network));
         RiverNetworkLoader.getNetwork().ifPresent(network -> RiverGenerator.generateRivers(chunk, network));
+        WallNetworkLoader.getNetwork().ifPresent(network -> WallGenerator.generateWalls(chunk, network));
     }
 
     private void buildSurface(ChunkAccess chunk, WorldGenerationContext heightContext, RandomState noiseConfig, StructureManager structureAccessor, BiomeManager biomeAccess, Registry<Biome> biomeRegistry, Blender blender) {

@@ -12,6 +12,7 @@ import dev.tocraft.ctgen.impl.network.SyncMapPacket;
 import dev.tocraft.ctgen.rivers.RiverNetworkLoader;
 import dev.tocraft.ctgen.roads.RoadNetworkLoader;
 import dev.tocraft.ctgen.underground.UndergroundBiomeLoader;
+import dev.tocraft.ctgen.walls.WallNetworkLoader;
 import dev.tocraft.ctgen.worldgen.MapBasedBiomeSource;
 import dev.tocraft.ctgen.worldgen.MapBasedChunkGenerator;
 import dev.tocraft.ctgen.worldgen.noise.CTGAboveSurfaceCondition;
@@ -53,6 +54,7 @@ public final class CTGNeoForgeEventListener {
         event.addListener(new UndergroundBiomeLoader());
         event.addListener(new RiverNetworkLoader());
         event.addListener(new MapWaypointLoader());
+        event.addListener(new WallNetworkLoader());
     }
 
     private static void registerCommands(@NotNull RegisterCommandsEvent event) {
