@@ -1,0 +1,26 @@
+modLoader = "javafml"
+loaderVersion = "[1,)"
+issueTrackerURL = "https://github.com/ToCraft/CraftedTerrainGeneration/issues"
+displayURL = "https://github.com/ToCraft/CraftedTerrainGeneration"
+license = "Crafted License 1.0"
+
+[[mixins]]
+config = "ctgen.mixins.json"
+
+[[mods]]
+modId = "ctgen"
+version = "${version}"
+displayName = "CTGen"
+authors = "To_Craft"
+description = '''
+Create your own world by using a drawn map!
+'''
+logoFile = "pack.png"
+
+[[dependencies.ctgen]]
+modId = "minecraft"
+type = "required"
+versionRange = "[${minecraft},)"
+ordering = "NONE"
+side = "BOTH"
+
