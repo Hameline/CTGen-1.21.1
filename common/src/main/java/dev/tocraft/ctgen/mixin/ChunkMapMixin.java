@@ -59,9 +59,10 @@ public class ChunkMapMixin {
         if (chunkGenerator instanceof MapBasedChunkGenerator generator) {
             this.randomState = RandomState.create(
                     generator.getNoiseGenSettings(),
-                    world.registryAccess().lookupOrThrow(Registries.NOISE),
+                    world.registryAccess().lookup(Registries.NOISE).orElseThrow(),
                     world.getSeed()
             );
         }
     }
 }
+

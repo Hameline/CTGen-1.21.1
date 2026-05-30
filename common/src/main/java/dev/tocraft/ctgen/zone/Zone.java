@@ -9,6 +9,7 @@ import net.minecraft.resources.RegistryFileCodec;
 import net.minecraft.world.level.biome.Biome;
 
 import java.util.List;
+import java.util.Optional;
 
 public record Zone(
         List<BiomeEntry> biomes,
@@ -28,13 +29,24 @@ public record Zone(
         ).apply(instance, instance.stable(BiomeEntry::new)));
     }
 
-    public static final Codec<Zone> DIRECT_CODEC = RecordCodecBuilder.create((instance) -> instance.group(
+    private static final Codec<Zone> MODERN_CODEC = RecordCodecBuilder.create((instance) -> instance.group(
             Codec.list(BiomeEntry.CODEC).fieldOf("biomes").forGetter(Zone::biomes),
             Codecs.COLOR.fieldOf("color").forGetter(Zone::color),
             Codec.DOUBLE.optionalFieldOf("terrain_modifier", DEFAULT_TERRAIN_MODIFIER).forGetter(Zone::terrainModifier),
             Codec.DOUBLE.optionalFieldOf("pixel_weight", DEFAULT_PIXEL_WEIGHT).forGetter(Zone::pixelWeight),
             Codec.INT.optionalFieldOf("blob_scale", DEFAULT_BLOB_SCALE).forGetter(Zone::blobScale)
     ).apply(instance, instance.stable(Zone::new)));
+
+    private static final Codec<Zone> LEGACY_CODEC = RecordCodecBuilder.create((instance) -> instance.group(
+            Biome.CODEC.fieldOf("biome").forGetter(zone -> zone.biomes().get(0).biome()),
+            Codecs.COLOR.fieldOf("color").forGetter(Zone::color),
+            Codec.DOUBLE.optionalFieldOf("terrain_modifier", DEFAULT_TERRAIN_MODIFIER).forGetter(Zone::terrainModifier),
+            Codec.DOUBLE.optionalFieldOf("pixel_weight", DEFAULT_PIXEL_WEIGHT).forGetter(Zone::pixelWeight),
+            Codec.INT.optionalFieldOf("blob_scale", DEFAULT_BLOB_SCALE).forGetter(Zone::blobScale)
+    ).apply(instance, (biome, color, terrainModifier, pixelWeight, blobScale) ->
+            new Zone(List.of(new BiomeEntry(biome, 1.0)), color, terrainModifier, pixelWeight, blobScale)));
+
+    public static final Codec<Zone> DIRECT_CODEC = Codec.withAlternative(MODERN_CODEC, LEGACY_CODEC);
 
     public static RegistryFileCodec<Zone> CODEC = RegistryFileCodec.create(CTRegistries.ZONES_KEY, DIRECT_CODEC);
 

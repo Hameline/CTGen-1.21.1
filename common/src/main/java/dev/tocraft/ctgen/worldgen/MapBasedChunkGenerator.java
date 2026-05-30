@@ -14,7 +14,9 @@ import net.minecraft.SharedConstants;
 import net.minecraft.Util;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Holder;
+import net.minecraft.core.HolderLookup;
 import net.minecraft.core.Registry;
+import net.minecraft.core.RegistryAccess;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.WorldGenRegion;
@@ -138,7 +140,28 @@ public class MapBasedChunkGenerator extends ChunkGenerator {
 
     @SuppressWarnings("unchecked")
     private static Registry<Biome> biomeRegistry(WorldGenRegion region) {
-        return (Registry<Biome>) (Object) region.registryAccess().lookupOrThrow(Registries.BIOME);
+        Object current = region.getLevel().registryAccess().lookupOrThrow(Registries.BIOME);
+        for (int i = 0; i < 8 && current != null; i++) {
+            if (current instanceof Registry<?> registry) {
+                return (Registry<Biome>) registry;
+            }
+            try {
+                var method = current.getClass().getDeclaredMethod("parent");
+                method.setAccessible(true);
+                current = method.invoke(current);
+                continue;
+            } catch (ReflectiveOperationException ignored) {
+            }
+            try {
+                var field = current.getClass().getDeclaredField("this$0");
+                field.setAccessible(true);
+                current = field.get(current);
+                continue;
+            } catch (ReflectiveOperationException ignored) {
+            }
+            break;
+        }
+        throw new IllegalStateException("Biome lookup is not a Registry: " + region.getLevel().registryAccess().lookupOrThrow(Registries.BIOME).getClass().getName());
     }
 
     private NoiseChunk createChunkNoiseSampler(NoiseGeneratorSettings settings, ChunkAccess chunk, StructureManager world, Blender blender, RandomState noiseConfig) {
@@ -385,3 +408,10 @@ public class MapBasedChunkGenerator extends ChunkGenerator {
         }
     }
 }
+
+
+
+
+
+
+
