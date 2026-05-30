@@ -17,32 +17,19 @@ import net.minecraft.world.level.block.state.properties.StairsShape;
 import org.jetbrains.annotations.NotNull;
 
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
 public class WallGenerator {
 
-    private static final Map<WallType, List<int[]>> WALL_POINT_CACHE = new HashMap<>();
+    private static final int MAX_CACHE_SIZE = 50;
 
-    // hardcoded cross section of 15 blocks from left to right:
-    // block 0:       left battlement
-    // block 1,2,3:   left trench
-    // block 4,5:     left snow wall
-    // block 6,7,8:   center trench (block 7 = exact center)
-    // block 9,10:    right snow wall
-    // block 11,12,13: right trench
-    // block 14:      right battlement
-    //
-    // intDist = distance from center of wall (intDist=0 is center block 7)
-    // intDist 0 = block 7 (center trench)
-    // intDist 1 = block 6 or 8 (outer center trench)
-    // intDist 2 = block 5 or 9 (snow wall inner)
-    // intDist 3 = block 4 or 10 (snow wall outer)
-    // intDist 4 = block 3 or 11 (trench inner)
-    // intDist 5 = block 2 or 12 (trench middle)
-    // intDist 6 = block 1 or 13 (trench outer)
-    // intDist 7 = block 0 or 14 (battlement)
+    private static final Map<WallType, List<int[]>> WALL_POINT_CACHE = new java.util.LinkedHashMap<>(16, 0.75f, true) {
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<WallType, List<int[]>> eldest) {
+            return size() > MAX_CACHE_SIZE;
+        }
+    };
 
     public static void generateWalls(@NotNull ChunkAccess chunk, @NotNull WallNetwork network) {
         int chunkMinX = chunk.getPos().getMinBlockX();
@@ -81,6 +68,10 @@ public class WallGenerator {
         }
     }
 
+    public static void clearCaches() {
+        WALL_POINT_CACHE.clear();
+    }
+
     private static List<int[]> getOrComputeWallPoints(WallType wall) {
         if (WALL_POINT_CACHE.containsKey(wall)) {
             return WALL_POINT_CACHE.get(wall);
@@ -94,7 +85,7 @@ public class WallGenerator {
             totalDist += Math.sqrt(dx * dx + dz * dz);
         }
 
-        int samples = Math.max(64, (int) totalDist);
+        int samples = Math.max(64, (int) totalDist / 4);
         List<int[]> points = new ArrayList<>(samples + 1);
 
         for (int i = 0; i <= samples; i++) {
@@ -174,7 +165,6 @@ public class WallGenerator {
     }
 
     private static boolean isSnowWallPresent(int wallCoord, boolean isOuterWall) {
-        // both walls use the same seed so gaps appear on both sides simultaneously
         int breakPeriod = 20 + hashCoordBounded(
                 (int)(Math.abs(wallCoord) / 50 + 0xF0),
                 0xBA, 31);
@@ -218,10 +208,8 @@ public class WallGenerator {
             int floorY,
             BlockPos.MutableBlockPos pos
     ) {
-        // battlement starts 1 block lower than the inner path floor
         int battlementBase = floorY - 1;
 
-        // solid battlement blocks 1-2 high above battlementBase
         int solidHeight = 1 + jaggedHeight(x * 7 + z * 13, z * 3 + x * 11, 1, 0xB4771E3CL);
         for (int y = battlementBase + 1; y <= battlementBase + solidHeight; y++) {
             pos.set(x, y, z);
@@ -232,8 +220,6 @@ public class WallGenerator {
 
         int topY = battlementBase + solidHeight + 1;
 
-        // 80% slab or stair on top — no snow on these
-        // 20% solid block on top — snow layer placed above it
         int topRoll = hashCoordBounded(x + 1000, z + 2000, 10);
         if (topRoll < 8) {
             int slabOrStair = hashCoordBounded(x + 3000, z + 4000, 2);
@@ -243,7 +229,6 @@ public class WallGenerator {
                     pos.set(x, topY, z);
                     chunk.setBlockState(pos, slab.defaultBlockState()
                             .setValue(SlabBlock.TYPE, SlabType.BOTTOM), false);
-                    // no snow on slabs
                 }
             } else if (!b.battlementStairs().isEmpty()) {
                 Block stair = b.battlementStairs().get(hashCoordBounded(x, z, b.battlementStairs().size()));
@@ -256,17 +241,14 @@ public class WallGenerator {
                             .setValue(StairBlock.FACING, stairFacing)
                             .setValue(StairBlock.HALF, Half.BOTTOM)
                             .setValue(StairBlock.SHAPE, StairsShape.STRAIGHT), false);
-                    // no snow on stairs
                 }
             }
         } else {
-            // solid block on top
             Block block = b.battlementBlocks().isEmpty() ? Blocks.PACKED_ICE
                     : b.battlementBlocks().get(hashCoordBounded(x + topY * 31, z + topY * 17, b.battlementBlocks().size()));
             pos.set(x, topY, z);
             chunk.setBlockState(pos, block.defaultBlockState(), false);
 
-            // snow layer on top of solid block — random 1-4 layers
             pos.set(x, topY + 1, z);
             chunk.setBlockState(pos, Blocks.SNOW.defaultBlockState()
                     .setValue(SnowLayerBlock.LAYERS, 1 + jaggedHeight(x, z, 3, 0x53AF12BCL)), false);
@@ -285,6 +267,14 @@ public class WallGenerator {
         BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
         int baseHalfWidth = wall.baseWidth() / 2;
 
+        // compute total section height once — same for every column
+        int totalSectionHeight = 0;
+        for (WallSection s : wall.sections()) totalSectionHeight += s.height();
+
+        // cache natural height per column to avoid rescanning each column multiple times
+        int[][] naturalHeightCache = new int[16][16];
+        boolean[][] naturalHeightComputed = new boolean[16][16];
+
         for (int x = chunkMinX; x <= chunkMaxX; x++) {
             for (int z = chunkMinZ; z <= chunkMaxZ; z++) {
                 int localX = x - chunkMinX;
@@ -301,7 +291,11 @@ public class WallGenerator {
                 int intDist = (int) Math.floor(minDist);
                 if (intDist >= baseHalfWidth) continue;
 
-                int surfaceY = getNaturalHeight(chunk, localX, localZ);
+                if (!naturalHeightComputed[localX][localZ]) {
+                    naturalHeightCache[localX][localZ] = getNaturalHeight(chunk, localX, localZ);
+                    naturalHeightComputed[localX][localZ] = true;
+                }
+                int surfaceY = naturalHeightCache[localX][localZ];
                 int currentY = surfaceY + 1;
 
                 for (int sectionIdx = 0; sectionIdx < wall.sections().size(); sectionIdx++) {
@@ -349,27 +343,17 @@ public class WallGenerator {
                     currentY += section.height();
                 }
 
-                // battlement generation
-                // hardcoded 15-block cross section by intDist from center:
-                // intDist 7     → battlement (1 block each side) — no floor
-                // intDist 4,5,6 → outer trench (3 blocks each side) — floor + snow on top
-                // intDist 2,3   → snow wall (2 blocks each side) — floor + snow wall
-                // intDist 0,1   → center trench (3 blocks total) — floor + snow on top
                 if (wall.battlement().isPresent() && intDist <= 7) {
                     WallBattlement b = wall.battlement().get();
 
-                    int outerEdgeY = surfaceY + 1;
-                    for (WallSection s : wall.sections()) outerEdgeY += s.height();
-
+                    // outerEdgeY computed using pre-calculated totalSectionHeight
+                    int outerEdgeY = surfaceY + 1 + totalSectionHeight;
                     int floorY = outerEdgeY;
                     int wallCoord = x + z;
 
                     if (intDist == 7) {
-                        // battlement — rises 1 block lower than inner path, no floor
                         placeBattlementWall(chunk, b, nearbyPoints, x, z, floorY, pos);
-
                     } else {
-                        // central 13 blocks — place floor from currentY up to outerEdgeY
                         Block floorBlock = b.floorBlocks().isEmpty() ? Blocks.GRAVEL
                                 : b.floorBlocks().get(hashCoordBounded(x, z, b.floorBlocks().size()));
                         for (int y = currentY; y <= outerEdgeY; y++) {
@@ -380,27 +364,18 @@ public class WallGenerator {
                         boolean placedSomethingAboveFloor = false;
 
                         if (intDist >= 4) {
-                            // outer trench — intDist 4, 5, 6 — open air above floor
-                            // intDist 4 is adjacent to outer snow wall — check bulge
                             if (intDist == 4 && isSnowWallPresent(wallCoord, true)
                                     && isSnowWallBulging(wallCoord, true)) {
                                 placeSnowWallColumn(chunk, x, z, floorY + 1, wallCoord, true, pos);
                                 placedSomethingAboveFloor = true;
                             }
-
                         } else if (intDist >= 2) {
-                            // snow wall — intDist 2, 3
-                            // intDist 3 = outer snow wall, intDist 2 = inner snow wall
-                            // when break present nothing placed above floor — gap goes all the way through
                             boolean isOuter = intDist == 3;
                             if (isSnowWallPresent(wallCoord, isOuter)) {
                                 placeSnowWallColumn(chunk, x, z, floorY + 1, wallCoord, isOuter, pos);
                                 placedSomethingAboveFloor = true;
                             }
-
                         } else {
-                            // center trench — intDist 0, 1 — open air above floor
-                            // intDist 1 is adjacent to inner snow wall — check bulge
                             if (intDist == 1 && isSnowWallPresent(wallCoord, false)
                                     && isSnowWallBulging(wallCoord, false)) {
                                 placeSnowWallColumn(chunk, x, z, floorY + 1, wallCoord, false, pos);
@@ -408,7 +383,6 @@ public class WallGenerator {
                             }
                         }
 
-                        // place snow layer on floor where nothing is above it
                         if (!placedSomethingAboveFloor) {
                             pos.set(x, floorY + 1, z);
                             chunk.setBlockState(pos, Blocks.SNOW.defaultBlockState()
@@ -424,7 +398,8 @@ public class WallGenerator {
         int worldX = chunk.getPos().getMinBlockX() + localX;
         int worldZ = chunk.getPos().getMinBlockZ() + localZ;
         BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
-        for (int y = chunk.getMaxBuildHeight() - 1; y >= chunk.getMinBuildHeight(); y--) {
+        int startY = Math.min(256, chunk.getMaxBuildHeight() - 1);
+        for (int y = startY; y >= chunk.getMinBuildHeight(); y--) {
             pos.set(worldX, y, worldZ);
             BlockState state = chunk.getBlockState(pos);
             if (!state.isAir() && !state.is(BlockTags.LEAVES) && !state.is(BlockTags.LOGS)) {

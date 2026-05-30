@@ -13,14 +13,26 @@ import net.minecraft.world.level.levelgen.synth.SimplexNoise;
 import org.jetbrains.annotations.NotNull;
 
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
 public class RiverGenerator {
 
-    private static final Map<River, List<int[]>> RIVER_POINT_CACHE = new HashMap<>();
-    private static final Map<River, List<double[]>> FORD_SEGMENT_CACHE = new HashMap<>();
+    private static final int MAX_CACHE_SIZE = 50;
+
+    private static final Map<River, List<int[]>> RIVER_POINT_CACHE = new java.util.LinkedHashMap<>(16, 0.75f, true) {
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<River, List<int[]>> eldest) {
+            return size() > MAX_CACHE_SIZE;
+        }
+    };
+
+    private static final Map<River, List<double[]>> FORD_SEGMENT_CACHE = new java.util.LinkedHashMap<>(16, 0.75f, true) {
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<River, List<double[]>> eldest) {
+            return size() > MAX_CACHE_SIZE;
+        }
+    };
 
     private static final SimplexNoise MEANDER_NOISE_X = new SimplexNoise(new LegacyRandomSource(0xDEADBEEFL));
     private static final SimplexNoise MEANDER_NOISE_Z = new SimplexNoise(new LegacyRandomSource(0xCAFEBABEL));
@@ -75,6 +87,11 @@ public class RiverGenerator {
         }
     }
 
+    public static void clearCaches() {
+        RIVER_POINT_CACHE.clear();
+        FORD_SEGMENT_CACHE.clear();
+    }
+
     private static List<int[]> getOrComputeSplinePoints(River river) {
         if (RIVER_POINT_CACHE.containsKey(river)) {
             return RIVER_POINT_CACHE.get(river);
@@ -89,7 +106,7 @@ public class RiverGenerator {
         }
 
         double meanderStrength = river.type().meanderStrength();
-        int samples = Math.max(64, (int) totalDist);
+        int samples = Math.max(64, (int) totalDist / 4);
         List<int[]> points = new ArrayList<>(samples + 1);
 
         for (int i = 0; i <= samples; i++) {
@@ -98,7 +115,6 @@ public class RiverGenerator {
             double x = pos[0];
             double z = pos[1];
 
-            // layer 1 — path-based S-curve meandering
             if (meanderStrength > 0) {
                 double tAhead = Math.min(1.0, t + 1.0 / samples);
                 double[] posAhead = river.evaluateSpline(tAhead);
@@ -117,7 +133,6 @@ public class RiverGenerator {
                 }
             }
 
-            // layer 2 — world-space fine-grained wiggle, hardcoded at 0.1
             {
                 double frequency = MEANDER_BASE_FREQUENCY * (1.0 + 0.1 * 3.0);
                 double amplitude = MEANDER_BASE_AMPLITUDE * 0.1;
@@ -254,12 +269,15 @@ public class RiverGenerator {
 
         BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
 
+        // cache natural height per column to avoid rescanning each column multiple times
+        int[][] naturalHeightCache = new int[16][16];
+        boolean[][] naturalHeightComputed = new boolean[16][16];
+
         for (int x = chunkMinX; x <= chunkMaxX; x++) {
             for (int z = chunkMinZ; z <= chunkMaxZ; z++) {
                 int localX = x - chunkMinX;
                 int localZ = z - chunkMinZ;
 
-                // find closest river spline point
                 double minDist = Double.MAX_VALUE;
                 for (int[] pt : nearbyPoints) {
                     double dx = x - pt[0];
@@ -274,18 +292,18 @@ public class RiverGenerator {
 
                 if (minDist >= transitionWidth) continue;
 
-                int naturalY = getNaturalHeight(chunk, localX, localZ);
+                if (!naturalHeightComputed[localX][localZ]) {
+                    naturalHeightCache[localX][localZ] = getNaturalHeight(chunk, localX, localZ);
+                    naturalHeightComputed[localX][localZ] = true;
+                }
+                int naturalY = naturalHeightCache[localX][localZ];
 
                 if (minDist <= halfWidth) {
-                    // --- river channel ---
-
-                    // compute river floor targetY
                     double normalizedDist = minDist / halfWidth;
                     double depthFraction = (1.0 - (normalizedDist * normalizedDist)) * getDepthVariation(x, z);
                     int targetY = (int) Math.floor(seaLevel - maxDepth * depthFraction);
                     targetY = Math.max(targetY, chunk.getMinBuildHeight() + 1);
 
-                    // carve down to targetY
                     for (int y = naturalY; y > targetY; y--) {
                         pos.set(x, y, z);
                         BlockState state = chunk.getBlockState(pos);
@@ -294,7 +312,6 @@ public class RiverGenerator {
                         }
                     }
 
-                    // place bed block at targetY — the river floor
                     if (!bedBlocks.isEmpty()) {
                         Block bedBlock = getBedBlock(x, z, bedBlocks);
                         pos.set(x, targetY, z);
@@ -304,7 +321,6 @@ public class RiverGenerator {
                         }
                     }
 
-                    // check ford
                     double minFordDist = Double.MAX_VALUE;
                     for (double[] seg : fordSegments) {
                         double d = distToSegment(x, z, seg[0], seg[1], seg[2], seg[3]);
@@ -316,28 +332,20 @@ public class RiverGenerator {
                     if (isFord) {
                         double fordT = minFordDist / fordCorridorWidth;
                         double fordInfluence = 1.0 - smoothStep(fordT);
-
-                        // ford top: at full influence = seaLevel-1, at zero influence = targetY
                         int fordTopY = (int) Math.round(targetY + fordInfluence * ((seaLevel - 1) - targetY));
                         fordTopY = Math.min(fordTopY, seaLevel - 1);
 
                         if (fordTopY > targetY) {
-                            Block bedBlock = bedBlocks.isEmpty() ? Blocks.GRAVEL
-                                    : getBedBlock(x, z, bedBlocks);
-
-                            // fill from river floor up to ford top with bed blocks
+                            Block bedBlock = bedBlocks.isEmpty() ? Blocks.GRAVEL : getBedBlock(x, z, bedBlocks);
                             for (int y = targetY + 1; y <= fordTopY; y++) {
                                 pos.set(x, y, z);
                                 chunk.setBlockState(pos, bedBlock.defaultBlockState(), false);
                             }
-
-                            // water from fordTopY+1 to seaLevel
                             for (int y = fordTopY + 1; y <= seaLevel; y++) {
                                 pos.set(x, y, z);
                                 chunk.setBlockState(pos, Blocks.WATER.defaultBlockState(), false);
                             }
                         } else {
-                            // ford influence too low — normal water fill
                             for (int y = targetY + 1; y <= seaLevel; y++) {
                                 pos.set(x, y, z);
                                 BlockState state = chunk.getBlockState(pos);
@@ -347,8 +355,6 @@ public class RiverGenerator {
                             }
                         }
                     } else {
-                        // no ford — water fills from targetY+1 to seaLevel
-                        // targetY itself is the bed block, water starts above it
                         for (int y = targetY + 1; y <= seaLevel; y++) {
                             pos.set(x, y, z);
                             BlockState state = chunk.getBlockState(pos);
@@ -359,7 +365,6 @@ public class RiverGenerator {
                     }
 
                 } else {
-                    // --- transition zone ---
                     double transitionT = (minDist - halfWidth) / (transitionWidth - halfWidth);
                     double smoothT = smoothStep(transitionT);
                     int targetY = (int) Math.round(seaLevel + (naturalY - seaLevel) * smoothT);
@@ -407,7 +412,8 @@ public class RiverGenerator {
         int worldX = chunk.getPos().getMinBlockX() + localX;
         int worldZ = chunk.getPos().getMinBlockZ() + localZ;
         BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
-        for (int y = chunk.getMaxBuildHeight() - 1; y >= chunk.getMinBuildHeight(); y--) {
+        int startY = Math.min(256, chunk.getMaxBuildHeight() - 1);
+        for (int y = startY; y >= chunk.getMinBuildHeight(); y--) {
             pos.set(worldX, y, worldZ);
             if (!chunk.getBlockState(pos).isAir()) return y;
         }

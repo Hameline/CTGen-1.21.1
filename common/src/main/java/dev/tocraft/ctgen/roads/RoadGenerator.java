@@ -14,13 +14,19 @@ import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
 public class RoadGenerator {
 
-    private static final Map<String, List<int[]>> ROAD_POINT_CACHE = new HashMap<>();
+    private static final int MAX_CACHE_SIZE = 100;
+
+    private static final Map<String, List<int[]>> ROAD_POINT_CACHE = new java.util.LinkedHashMap<>(16, 0.75f, true) {
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<String, List<int[]>> eldest) {
+            return size() > MAX_CACHE_SIZE;
+        }
+    };
 
     private static final SimplexNoise HEIGHT_NOISE = new SimplexNoise(new LegacyRandomSource(555666777L));
     private static final double HEIGHT_FREQUENCY = 0.00015;
@@ -55,6 +61,10 @@ public class RoadGenerator {
                 generateSegment(chunk, road, roadType, from, to, chunkMinX, chunkMinZ, chunkMaxX, chunkMaxZ);
             }
         }
+    }
+
+    public static void clearCaches() {
+        ROAD_POINT_CACHE.clear();
     }
 
     private static int getRoadY(int baseY, int worldX, int worldZ) {
@@ -110,12 +120,13 @@ public class RoadGenerator {
 
         if (nearbyPoints.isEmpty()) return;
 
-        // placedRoadY stores Y for both road blocks and transition blocks
-        // so slabs can detect steps at road/transition and transition/terrain boundaries
         int[][] placedRoadY = new int[16][16];
         boolean[][] isRoadBlock = new boolean[16][16];
 
-        // first pass: place road surfaces and transitions, record Y for both
+        // cache natural height per column
+        int[][] naturalHeightCache = new int[16][16];
+        boolean[][] naturalHeightComputed = new boolean[16][16];
+
         for (int x = chunkMinX; x <= chunkMaxX; x++) {
             for (int z = chunkMinZ; z <= chunkMaxZ; z++) {
                 int[] closest = findClosest(nearbyPoints, x, z);
@@ -130,10 +141,15 @@ public class RoadGenerator {
                     placeRoadSurface(chunk, localX, localZ, roadY, roadType);
                     placedRoadY[localX][localZ] = roadY;
                     isRoadBlock[localX][localZ] = true;
+                    naturalHeightCache[localX][localZ] = roadY;
+                    naturalHeightComputed[localX][localZ] = true;
                 } else if (closestDist <= halfWidth + road.transition()) {
+                    if (!naturalHeightComputed[localX][localZ]) {
+                        naturalHeightCache[localX][localZ] = getNaturalHeight(chunk, localX, localZ);
+                        naturalHeightComputed[localX][localZ] = true;
+                    }
+                    int naturalY = naturalHeightCache[localX][localZ];
                     placeTransition(chunk, localX, localZ, roadY, road.transition(), closestDist - halfWidth);
-                    // record transition Y using the same smoothstep as placeTransition
-                    int naturalY = getNaturalHeight(chunk, localX, localZ);
                     double t = (closestDist - halfWidth) / road.transition();
                     t = t * t * (3 - 2 * t);
                     placedRoadY[localX][localZ] = (int) Math.round(roadY + (naturalY - roadY) * t);
@@ -141,8 +157,6 @@ public class RoadGenerator {
             }
         }
 
-        // second pass: place slabs on 1-block height differences between neighbors
-        // checks in-chunk neighbors (road and transition blocks) and out-of-chunk neighbors
         for (int localX = 0; localX < 16; localX++) {
             for (int localZ = 0; localZ < 16; localZ++) {
                 if (!isRoadBlock[localX][localZ]) continue;
@@ -158,7 +172,6 @@ public class RoadGenerator {
 
                 MutableBlockPos pos = new MutableBlockPos();
 
-                // [localX, localZ, worldX, worldZ]
                 int[][] neighbors = {
                         {localX - 1, localZ, worldX - 1, worldZ},
                         {localX + 1, localZ, worldX + 1, worldZ},
@@ -175,38 +188,22 @@ public class RoadGenerator {
                     int neighborY;
 
                     if (nx >= 0 && nx < 16 && nz >= 0 && nz < 16) {
-                        // neighbor is in chunk
-                        // placedRoadY is 0 if this position was never touched by road or transition
                         if (placedRoadY[nx][nz] == 0) continue;
                         neighborY = placedRoadY[nx][nz];
                     } else {
-                        // neighbor is outside chunk — use allRoadPoints for reliable lookup
-                        // allRoadPoints covers the full segment, not just the nearby subset
                         int[] closestOutside = findClosest(allRoadPoints, nwx, nwz);
                         if (closestOutside == null) continue;
                         double outsideDist = dist(nwx, nwz, closestOutside[0], closestOutside[2]);
                         if (outsideDist > halfWidth + road.transition()) continue;
-
-                        if (outsideDist <= halfWidth) {
-                            // road block outside chunk — road Y is deterministic from noise
-                            neighborY = closestOutside[1];
-                        } else {
-                            // transition block outside chunk
-                            // we can't read terrain height from outside this chunk
-                            // use road Y as the neighbor Y — the height noise is deterministic
-                            // so this gives a consistent result matching what that chunk will generate
-                            neighborY = closestOutside[1];
-                        }
+                        neighborY = closestOutside[1];
                     }
 
                     if (neighborY - myY == 1) {
-                        // neighbor is 1 higher — place bottom slab at neighborY on this column
                         pos.set(worldX, neighborY, worldZ);
                         chunk.setBlockState(pos, slab.defaultBlockState()
                                 .setValue(SlabBlock.TYPE, SlabType.BOTTOM), false);
                         break;
                     } else if (myY - neighborY == 1) {
-                        // this block is 1 higher — place bottom slab at myY
                         pos.set(worldX, myY, worldZ);
                         chunk.setBlockState(pos, slab.defaultBlockState()
                                 .setValue(SlabBlock.TYPE, SlabType.BOTTOM), false);
@@ -234,13 +231,11 @@ public class RoadGenerator {
         int naturalY = getNaturalHeight(chunk, localX, localZ);
 
         if (roadY >= naturalY) {
-            // road above terrain — build embankment
             for (int y = naturalY + 1; y <= roadY; y++) {
                 pos.set(worldX, y, worldZ);
                 chunk.setBlockState(pos, block.defaultBlockState(), false);
             }
         } else {
-            // road below terrain — cut down
             for (int y = roadY + 1; y <= naturalY; y++) {
                 pos.set(worldX, y, worldZ);
                 BlockState state = chunk.getBlockState(pos);
@@ -250,18 +245,15 @@ public class RoadGenerator {
             }
         }
 
-        // fill any air gaps below road
         for (int y = roadY - 1; y >= chunk.getMinBuildHeight(); y--) {
             pos.set(worldX, y, worldZ);
             if (!chunk.getBlockState(pos).isAir()) break;
             chunk.setBlockState(pos, block.defaultBlockState(), false);
         }
 
-        // place road surface block
         pos.set(worldX, roadY, worldZ);
         chunk.setBlockState(pos, block.defaultBlockState(), false);
 
-        // clear above road surface
         for (int y = roadY + 1; y < chunk.getMaxBuildHeight(); y++) {
             pos.set(worldX, y, worldZ);
             BlockState state = chunk.getBlockState(pos);
@@ -312,7 +304,8 @@ public class RoadGenerator {
         int worldX = chunk.getPos().getMinBlockX() + localX;
         int worldZ = chunk.getPos().getMinBlockZ() + localZ;
         MutableBlockPos pos = new MutableBlockPos();
-        for (int y = chunk.getMaxBuildHeight() - 1; y >= chunk.getMinBuildHeight(); y--) {
+        int startY = Math.min(256, chunk.getMaxBuildHeight() - 1);
+        for (int y = startY; y >= chunk.getMinBuildHeight(); y--) {
             pos.set(worldX, y, worldZ);
             if (!chunk.getBlockState(pos).isAir()) {
                 return y;

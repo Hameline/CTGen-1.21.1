@@ -9,9 +9,12 @@ import dev.tocraft.ctgen.data.HeightImageRegistry;
 import dev.tocraft.ctgen.data.MapWaypointLoader;
 import dev.tocraft.ctgen.impl.CTGCommand;
 import dev.tocraft.ctgen.impl.network.SyncMapPacket;
+import dev.tocraft.ctgen.rivers.RiverGenerator;
 import dev.tocraft.ctgen.rivers.RiverNetworkLoader;
+import dev.tocraft.ctgen.roads.RoadGenerator;
 import dev.tocraft.ctgen.roads.RoadNetworkLoader;
 import dev.tocraft.ctgen.underground.UndergroundBiomeLoader;
+import dev.tocraft.ctgen.walls.WallGenerator;
 import dev.tocraft.ctgen.walls.WallNetworkLoader;
 import dev.tocraft.ctgen.worldgen.MapBasedBiomeSource;
 import dev.tocraft.ctgen.worldgen.MapBasedChunkGenerator;
@@ -84,6 +87,11 @@ public final class CTGNeoForgeEventListener {
     }
 
     private static void onServerStopping(@NotNull ServerStoppingEvent event) {
+        // clear all generator caches to free memory on world unload
+        RiverGenerator.clearCaches();
+        RoadGenerator.clearCaches();
+        WallGenerator.clearCaches();
+
         Path waypointFile = event.getServer().getWorldPath(LevelResource.ROOT)
                 .resolve("ctgen_waypoints.json");
         try {
