@@ -37,6 +37,11 @@ public class WallGenerator {
         int chunkMaxX = chunkMinX + 15;
         int chunkMaxZ = chunkMinZ + 15;
 
+        // store original ground level per column before any wall generation
+        // so all walls use the same base Y regardless of generation order
+        int[][] groundCache = new int[16][16];
+        boolean[][] groundComputed = new boolean[16][16];
+
         for (WallType wall : network.walls()) {
             if (wall.waypoints().size() < 2) continue;
 
@@ -64,7 +69,8 @@ public class WallGenerator {
 
             if (nearbyPoints.isEmpty()) continue;
 
-            generateWall(chunk, wall, nearbyPoints, chunkMinX, chunkMinZ, chunkMaxX, chunkMaxZ);
+            generateWall(chunk, wall, nearbyPoints, chunkMinX, chunkMinZ, chunkMaxX, chunkMaxZ,
+                    groundCache, groundComputed);
         }
     }
 
@@ -89,8 +95,17 @@ public class WallGenerator {
         List<int[]> points = new ArrayList<>(samples + 1);
 
         for (int i = 0; i <= samples; i++) {
-            double t = (double) i / samples;
-            double[] p = evaluateSpline(wps, t);
+            double[] p;
+            if (i == 0) {
+                // force exact start waypoint so wall connects at junction
+                p = new double[]{wps.get(0).x(), wps.get(0).z()};
+            } else if (i == samples) {
+                // force exact end waypoint so wall connects at junction
+                p = new double[]{wps.get(wps.size() - 1).x(), wps.get(wps.size() - 1).z()};
+            } else {
+                double t = (double) i / samples;
+                p = evaluateSpline(wps, t);
+            }
             points.add(new int[]{(int) Math.round(p[0]), (int) Math.round(p[1])});
         }
 
@@ -262,18 +277,15 @@ public class WallGenerator {
             int chunkMinX,
             int chunkMinZ,
             int chunkMaxX,
-            int chunkMaxZ
+            int chunkMaxZ,
+            int[][] groundCache,
+            boolean[][] groundComputed
     ) {
         BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
         int baseHalfWidth = wall.baseWidth() / 2;
 
-        // compute total section height once — same for every column
         int totalSectionHeight = 0;
         for (WallSection s : wall.sections()) totalSectionHeight += s.height();
-
-        // cache natural height per column to avoid rescanning each column multiple times
-        int[][] naturalHeightCache = new int[16][16];
-        boolean[][] naturalHeightComputed = new boolean[16][16];
 
         for (int x = chunkMinX; x <= chunkMaxX; x++) {
             for (int z = chunkMinZ; z <= chunkMaxZ; z++) {
@@ -291,13 +303,16 @@ public class WallGenerator {
                 int intDist = (int) Math.floor(minDist);
                 if (intDist >= baseHalfWidth) continue;
 
-                if (!naturalHeightComputed[localX][localZ]) {
-                    naturalHeightCache[localX][localZ] = getNaturalHeight(chunk, localX, localZ);
-                    naturalHeightComputed[localX][localZ] = true;
+                // use original ground level — computed once per column across all walls
+                // so connected walls always start from the same base Y
+                if (!groundComputed[localX][localZ]) {
+                    groundCache[localX][localZ] = getNaturalHeight(chunk, localX, localZ);
+                    groundComputed[localX][localZ] = true;
                 }
-                int surfaceY = naturalHeightCache[localX][localZ];
+                int surfaceY = groundCache[localX][localZ];
                 int currentY = surfaceY + 1;
 
+                // generate sections — freely overwrites any previously placed wall blocks
                 for (int sectionIdx = 0; sectionIdx < wall.sections().size(); sectionIdx++) {
                     WallSection section = wall.sections().get(sectionIdx);
 
@@ -343,10 +358,10 @@ public class WallGenerator {
                     currentY += section.height();
                 }
 
+                // battlement
                 if (wall.battlement().isPresent() && intDist <= 7) {
                     WallBattlement b = wall.battlement().get();
 
-                    // outerEdgeY computed using pre-calculated totalSectionHeight
                     int outerEdgeY = surfaceY + 1 + totalSectionHeight;
                     int floorY = outerEdgeY;
                     int wallCoord = x + z;

@@ -106,42 +106,47 @@ public class RiverGenerator {
         }
 
         double meanderStrength = river.type().meanderStrength();
-        int samples = Math.max(64, (int) totalDist / 4);
+        int samples = Math.max(64, (int) totalDist);
         List<int[]> points = new ArrayList<>(samples + 1);
 
-        for (int i = 0; i <= samples; i++) {
+        for (int i = 1; i <= samples; i++) {
             double t = (double) i / samples;
             double[] pos = river.evaluateSpline(t);
             double x = pos[0];
             double z = pos[1];
 
-            if (meanderStrength > 0) {
-                double tAhead = Math.min(1.0, t + 1.0 / samples);
-                double[] posAhead = river.evaluateSpline(tAhead);
-                double dirX = posAhead[0] - x;
-                double dirZ = posAhead[1] - z;
-                double len = Math.sqrt(dirX * dirX + dirZ * dirZ);
-                if (len > 0) {
-                    double perpX = -dirZ / len;
-                    double perpZ = dirX / len;
-                    double frequency = 0.0005 + meanderStrength * 0.003;
-                    double amplitude = river.type().width() * (2.0 + meanderStrength * 8.0);
-                    double pathDist = t * totalDist;
-                    double displacement = MEANDER_NOISE_X.getValue(pathDist * frequency, 0) * amplitude;
-                    x += perpX * displacement;
-                    z += perpZ * displacement;
-                }
-            }
+            // skip meandering on the very last point so it connects cleanly to endpoint
+            boolean isEndpoint = (i == samples);
 
-            {
-                double frequency = MEANDER_BASE_FREQUENCY * (1.0 + 0.1 * 3.0);
-                double amplitude = MEANDER_BASE_AMPLITUDE * 0.1;
-                double dispX = MEANDER_NOISE_X.getValue(x * frequency, z * frequency) * amplitude
-                        + MEANDER_NOISE_X.getValue(x * frequency * 2.5 + 100, z * frequency * 2.5 + 100) * amplitude * 0.4;
-                double dispZ = MEANDER_NOISE_Z.getValue(x * frequency + 200, z * frequency + 200) * amplitude
-                        + MEANDER_NOISE_Z.getValue(x * frequency * 2.5 + 300, z * frequency * 2.5 + 300) * amplitude * 0.4;
-                x += dispX;
-                z += dispZ;
+            if (!isEndpoint) {
+                if (meanderStrength > 0) {
+                    double tAhead = Math.min(1.0, t + 1.0 / samples);
+                    double[] posAhead = river.evaluateSpline(tAhead);
+                    double dirX = posAhead[0] - x;
+                    double dirZ = posAhead[1] - z;
+                    double len = Math.sqrt(dirX * dirX + dirZ * dirZ);
+                    if (len > 0) {
+                        double perpX = -dirZ / len;
+                        double perpZ = dirX / len;
+                        double frequency = 0.0005 + meanderStrength * 0.003;
+                        double amplitude = river.type().width() * (2.0 + meanderStrength * 8.0);
+                        double pathDist = t * totalDist;
+                        double displacement = MEANDER_NOISE_X.getValue(pathDist * frequency, 0) * amplitude;
+                        x += perpX * displacement;
+                        z += perpZ * displacement;
+                    }
+                }
+
+                {
+                    double frequency = MEANDER_BASE_FREQUENCY * (1.0 + 0.1 * 3.0);
+                    double amplitude = MEANDER_BASE_AMPLITUDE * 0.1;
+                    double dispX = MEANDER_NOISE_X.getValue(x * frequency, z * frequency) * amplitude
+                            + MEANDER_NOISE_X.getValue(x * frequency * 2.5 + 100, z * frequency * 2.5 + 100) * amplitude * 0.4;
+                    double dispZ = MEANDER_NOISE_Z.getValue(x * frequency + 200, z * frequency + 200) * amplitude
+                            + MEANDER_NOISE_Z.getValue(x * frequency * 2.5 + 300, z * frequency * 2.5 + 300) * amplitude * 0.4;
+                    x += dispX;
+                    z += dispZ;
+                }
             }
 
             points.add(new int[]{(int) Math.round(x), (int) Math.round(z)});
@@ -269,7 +274,6 @@ public class RiverGenerator {
 
         BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
 
-        // cache natural height per column to avoid rescanning each column multiple times
         int[][] naturalHeightCache = new int[16][16];
         boolean[][] naturalHeightComputed = new boolean[16][16];
 
