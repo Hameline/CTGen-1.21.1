@@ -8,6 +8,7 @@ import dev.tocraft.ctgen.rivers.RiverGenerator;
 import dev.tocraft.ctgen.rivers.RiverNetworkLoader;
 import dev.tocraft.ctgen.roads.RoadGenerator;
 import dev.tocraft.ctgen.roads.RoadNetworkLoader;
+import dev.tocraft.ctgen.structures.CTGJigsawSmoothing;
 import dev.tocraft.ctgen.walls.WallGenerator;
 import dev.tocraft.ctgen.walls.WallNetworkLoader;
 import net.minecraft.SharedConstants;
@@ -25,14 +26,16 @@ import net.minecraft.util.RandomSource;
 import net.minecraft.world.level.*;
 import net.minecraft.world.level.biome.Biome;
 import net.minecraft.world.level.biome.BiomeManager;
-import net.minecraft.world.level.biome.MultiNoiseBiomeSourceParameterList;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.chunk.ChunkAccess;
 import net.minecraft.world.level.chunk.ChunkGenerator;
+import net.minecraft.world.level.chunk.ChunkGeneratorStructureState;
 import net.minecraft.world.level.levelgen.*;
 import net.minecraft.world.level.levelgen.GenerationStep.Carving;
 import net.minecraft.world.level.levelgen.blending.Blender;
+import net.minecraft.world.level.levelgen.structure.StructureSet;
+import net.minecraft.world.level.levelgen.structure.templatesystem.StructureTemplateManager;
 import net.minecraft.world.level.levelgen.synth.SimplexNoise;
 import org.jetbrains.annotations.ApiStatus;
 import org.jetbrains.annotations.NotNull;
@@ -60,12 +63,10 @@ public class MapBasedChunkGenerator extends ChunkGenerator {
 
     public static @NotNull MapBasedChunkGenerator of(MapSettings settings) {
         MapBasedBiomeSource biomeSource = new MapBasedBiomeSource(settings);
-        // register disabled structures and features globally
         DisabledStructureRegistry.setDisabledStructureSets(settings.getDisabledStructureSets());
         DisabledStructureRegistry.setDisabledFeatures(settings.getDisabledFeatures());
         return new MapBasedChunkGenerator(biomeSource);
     }
-
 
     @Override
     protected @NotNull MapCodec<MapBasedChunkGenerator> codec() {
@@ -76,7 +77,6 @@ public class MapBasedChunkGenerator extends ChunkGenerator {
     public void applyCarvers(WorldGenRegion chunkRegion, long seed, RandomState noiseConfig, BiomeManager biomeAccess, StructureManager structureAccessor, ChunkAccess chunk, Carving carving) {
         setNoise(noiseConfig);
 
-        // create noise chunk so modern carvers can sample density functions
         NoiseGeneratorSettings chunkGeneratorSettings = this.getNoiseGenSettings();
         Blender blender = Blender.of(chunkRegion);
         chunk.getOrCreateNoiseChunk(chunk2 ->
@@ -103,7 +103,6 @@ public class MapBasedChunkGenerator extends ChunkGenerator {
         this.buildSurface(chunk, heightContext, noiseConfig, structures, region.getBiomeManager(), biomeRegistry(region), Blender.of(region));
 
         // place snow layers on top of CTGen-placed snow blocks
-        // this runs after all surface rules so it catches snow blocks from our temperature system
         BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
         BlockPos.MutableBlockPos above = new BlockPos.MutableBlockPos();
         for (int x = 0; x < 16; x++) {
@@ -125,17 +124,34 @@ public class MapBasedChunkGenerator extends ChunkGenerator {
             }
         }
 
-        // generate roads after surface is built
+        // roads/rivers/walls generate after surface
         RoadNetworkLoader.getNetwork().ifPresent(network -> RoadGenerator.generateRoads(chunk, network));
         RiverNetworkLoader.getNetwork().ifPresent(network -> RiverGenerator.generateRivers(chunk, network));
         WallNetworkLoader.getNetwork().ifPresent(network -> WallGenerator.generateWalls(chunk, network));
+
+        // structure smoothing — runs before features so no vegetation conflicts
+        CTGJigsawSmoothing.smoothChunkAroundStructures(chunk, structures);
+    }
+
+    @Override
+    public void applyBiomeDecoration(
+            @NotNull WorldGenLevel level,
+            @NotNull ChunkAccess chunk,
+            @NotNull StructureManager structureManager
+    ) {
+        // structure smoothing runs before vanilla decoration
+        // at this point structures are placed so bounding boxes are available
+        // but features (trees/grass) have not been placed yet so no vegetation conflicts
+        CTGJigsawSmoothing.smoothChunkAroundStructures(chunk, structureManager);
+
+        // delegate to vanilla for biome decoration (features, plants, etc.)
+        delegate.applyBiomeDecoration(level, chunk, structureManager);
     }
 
     private void buildSurface(ChunkAccess chunk, WorldGenerationContext heightContext, RandomState noiseConfig, StructureManager structureAccessor, BiomeManager biomeAccess, Registry<Biome> biomeRegistry, Blender blender) {
         NoiseGeneratorSettings chunkGeneratorSettings = this.getNoiseGenSettings();
         NoiseChunk chunkNoiseSampler = chunk.getOrCreateNoiseChunk(chunk3 -> this.createChunkNoiseSampler(chunkGeneratorSettings, chunk3, structureAccessor, blender, noiseConfig));
         ((SurfaceBuilderAccess) noiseConfig.surfaceSystem()).ctgen$buildSurface(noiseConfig, biomeAccess, biomeRegistry, chunkGeneratorSettings.useLegacyRandomSource(), heightContext, chunk, chunkNoiseSampler, chunkGeneratorSettings.surfaceRule(), this::getSettings, () -> this.noise);
-
     }
 
     @SuppressWarnings("unchecked")
@@ -190,16 +206,12 @@ public class MapBasedChunkGenerator extends ChunkGenerator {
         }
 
         return CompletableFuture.supplyAsync(() -> {
-            // step 1: delegate fills the entire chunk with modern cave terrain
             try {
                 delegate.fillFromNoise(blender, noiseConfig, structureAccessor, chunk).get();
             } catch (Exception e) {
                 throw new RuntimeException(e);
             }
 
-            // step 2: for each column, find the top of the delegate's solid terrain
-            // then fill from there up to CTGen's surface height
-            // this closes the gap without touching the caves below
             BlockState defaultBlock = biomeSource.settings.noiseGenSettings.value().defaultBlock();
             BlockState defaultFluid = biomeSource.settings.noiseGenSettings.value().defaultFluid();
             ChunkPos chunkPos = chunk.getPos();
@@ -215,8 +227,6 @@ public class MapBasedChunkGenerator extends ChunkGenerator {
                     int worldX = chunkPos.getMinBlockX() + x;
                     int worldZ = chunkPos.getMinBlockZ() + z;
 
-                    // find the top of the delegate's solid terrain in this column
-                    // scan down from CTGen's surface height to find where delegate terrain ends
                     int delegateTop = chunk.getMinBuildHeight();
                     for (int y = floorHeight; y >= chunk.getMinBuildHeight(); y--) {
                         pos.set(worldX, y, worldZ);
@@ -227,14 +237,11 @@ public class MapBasedChunkGenerator extends ChunkGenerator {
                         }
                     }
 
-                    // fill the gap between delegate top and CTGen surface with solid stone
-                    // this connects the cave terrain to CTGen's surface seamlessly
                     for (int y = delegateTop + 1; y < floorHeight; y++) {
                         pos.set(worldX, y, worldZ);
                         chunk.setBlockState(pos, defaultBlock, false);
                     }
 
-                    // clear anything the delegate placed above CTGen's surface
                     for (int y = floorHeight; y < chunk.getMaxBuildHeight(); y++) {
                         pos.set(worldX, y, worldZ);
                         BlockState state = chunk.getBlockState(pos);
@@ -243,10 +250,40 @@ public class MapBasedChunkGenerator extends ChunkGenerator {
                         }
                     }
 
-                    // place fluid from CTGen surface up to sea level if underwater
                     for (int y = floorHeight; y < getSeaLevel(); y++) {
                         pos.set(worldX, y, worldZ);
                         chunk.setBlockState(pos, defaultFluid, false);
+                    }
+                }
+            }
+
+            // update all heightmaps to reflect CTGen's actual surface height
+            // vanilla structure placement reads WORLD_SURFACE_WG to determine spawn height
+            Heightmap heightmapWS = chunk.getOrCreateHeightmapUnprimed(Heightmap.Types.WORLD_SURFACE_WG);
+            Heightmap heightmapOS = chunk.getOrCreateHeightmapUnprimed(Heightmap.Types.OCEAN_FLOOR_WG);
+            Heightmap heightmapWSC = chunk.getOrCreateHeightmapUnprimed(Heightmap.Types.WORLD_SURFACE);
+            Heightmap heightmapOSC = chunk.getOrCreateHeightmapUnprimed(Heightmap.Types.OCEAN_FLOOR);
+
+            BlockPos.MutableBlockPos heightPos = new BlockPos.MutableBlockPos();
+            for (int x = 0; x < 16; x++) {
+                for (int z = 0; z < 16; z++) {
+                    int worldX = chunkPos.getMinBlockX() + x;
+                    int worldZ = chunkPos.getMinBlockZ() + z;
+
+                    double surfaceHeight = getSettings().getHeight(noise, worldX, worldZ);
+                    int floorHeight = (int) Math.floor(surfaceHeight);
+                    int actualSurface = Math.max(floorHeight, getSeaLevel());
+
+                    for (int y = actualSurface; y >= chunk.getMinBuildHeight(); y--) {
+                        heightPos.set(worldX, y, worldZ);
+                        BlockState state = chunk.getBlockState(heightPos);
+                        if (!state.isAir()) {
+                            heightmapWS.update(x, y, z, state);
+                            heightmapOS.update(x, y, z, state);
+                            heightmapWSC.update(x, y, z, state);
+                            heightmapOSC.update(x, y, z, state);
+                            break;
+                        }
                     }
                 }
             }
@@ -256,18 +293,14 @@ public class MapBasedChunkGenerator extends ChunkGenerator {
     }
 
     private @NotNull ChunkAccess fill(@NotNull ChunkAccess chunk) {
-        BlockState defaultBlock = biomeSource.settings.noiseGenSettings.value().defaultBlock(); // stone
-        BlockState defaultFluid = biomeSource.settings.noiseGenSettings.value().defaultFluid(); // water
+        BlockState defaultBlock = biomeSource.settings.noiseGenSettings.value().defaultBlock();
+        BlockState defaultFluid = biomeSource.settings.noiseGenSettings.value().defaultFluid();
         BlockState deepslate = Blocks.DEEPSLATE.defaultBlockState();
         BlockState bedrock = Blocks.BEDROCK.defaultBlockState();
 
         ChunkPos chunkPos = chunk.getPos();
         int minY = getNoiseGenSettings().noiseSettings().minY();
         int seaLevel = getSeaLevel();
-
-        // deepslate starts at Y 0 and transitions to stone by Y 8
-        // bedrock generates in the bottom 5 layers (minY to minY + 4)
-        // this mirrors vanilla's vertical block distribution
 
         for (int x = 0; x < 16; x++) {
             for (int z = 0; z < 16; z++) {
@@ -280,23 +313,16 @@ public class MapBasedChunkGenerator extends ChunkGenerator {
                 for (int y = minY; y < floorHeight; y++) {
                     BlockPos pos = chunkPos.getBlockAt(x, y, z);
 
-                    // bedrock layer — bottom 5 blocks
-                    // uses hash so bedrock is not a perfectly flat layer
                     if (y <= minY + 4) {
-                        // more bedrock at the very bottom, less higher up
                         if (y == minY || (y <= minY + 4 && hashCoord(x + chunkPos.getMinBlockX(), y, z + chunkPos.getMinBlockZ()) % (y - minY + 1) == 0)) {
                             chunk.setBlockState(pos, bedrock, false);
                             continue;
                         }
                     }
 
-                    // deepslate zone — Y -64 to Y 0
-                    // blends into stone between Y 0 and Y 8
                     if (y < 0) {
                         chunk.setBlockState(pos, deepslate, false);
                     } else if (y < 8) {
-                        // transition zone — mix of deepslate and stone
-                        // uses hash for natural looking boundary
                         long hash = hashCoord(x + chunkPos.getMinBlockX(), y, z + chunkPos.getMinBlockZ());
                         if (hash % 8 < (8 - y)) {
                             chunk.setBlockState(pos, deepslate, false);
@@ -308,7 +334,6 @@ public class MapBasedChunkGenerator extends ChunkGenerator {
                     }
                 }
 
-                // place fluid from surface up to sea level if underwater
                 for (int y = floorHeight; y < seaLevel; y++) {
                     BlockPos pos = chunkPos.getBlockAt(x, y, z);
                     chunk.setBlockState(pos, defaultFluid, false);
@@ -353,7 +378,7 @@ public class MapBasedChunkGenerator extends ChunkGenerator {
     @Override
     public int getBaseHeight(int pX, int pZ, @NotNull Heightmap.Types pType, @NotNull LevelHeightAccessor pLevel, @NotNull RandomState pRandom) {
         setNoise(pRandom);
-        return Math.max((int) (1 + getSettings().getHeight(noise, pX, pZ)), getSeaLevel());
+        return Math.max((int)(1 + getSettings().getHeight(noise, pX, pZ)), getSeaLevel());
     }
 
     @Override
@@ -386,6 +411,35 @@ public class MapBasedChunkGenerator extends ChunkGenerator {
     }
 
     @Override
+    public void createStructures(
+            @NotNull RegistryAccess registryAccess,
+            @NotNull ChunkGeneratorStructureState structureState,
+            @NotNull StructureManager structureManager,
+            @NotNull ChunkAccess chunk,
+            @NotNull StructureTemplateManager structureTemplateManager
+    ) {
+        delegate.createStructures(registryAccess, structureState, structureManager, chunk, structureTemplateManager);
+    }
+
+    @Override
+    public void createReferences(
+            @NotNull WorldGenLevel level,
+            @NotNull StructureManager structureManager,
+            @NotNull ChunkAccess chunk
+    ) {
+        delegate.createReferences(level, structureManager, chunk);
+    }
+
+    @Override
+    public @NotNull ChunkGeneratorStructureState createState(
+            @NotNull HolderLookup<StructureSet> structureSetLookup,
+            @NotNull RandomState randomState,
+            long seed
+    ) {
+        return delegate.createState(structureSetLookup, randomState, seed);
+    }
+
+    @Override
     @NotNull
     public MapBasedBiomeSource getBiomeSource() {
         return biomeSource;
@@ -401,17 +455,10 @@ public class MapBasedChunkGenerator extends ChunkGenerator {
         return biomeSource.settings.noiseGenSettings.value();
     }
 
-    public void setNoise(RandomState randomState) {
+    public synchronized void setNoise(RandomState randomState) {
         if (noise == null) {
             RandomSource randomSource = randomState.getOrCreateRandomFactory(CTerrainGeneration.id("generator")).at(0, 0, 0);
             noise = new SimplexNoise(randomSource);
         }
     }
 }
-
-
-
-
-
-
-

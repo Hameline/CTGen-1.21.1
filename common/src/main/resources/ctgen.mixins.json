@@ -14,8 +14,7 @@
     "DisableStructuresMixin",
     "DisableFeaturesMixin"
   ],
-  "client": [
-  ],
+  "client": [],
   "injectors": {
     "defaultRequire": 1
   }

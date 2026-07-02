@@ -13,6 +13,8 @@ import dev.tocraft.ctgen.rivers.RiverGenerator;
 import dev.tocraft.ctgen.rivers.RiverNetworkLoader;
 import dev.tocraft.ctgen.roads.RoadGenerator;
 import dev.tocraft.ctgen.roads.RoadNetworkLoader;
+import dev.tocraft.ctgen.structures.CTGJigsawSmoothing;
+import dev.tocraft.ctgen.structures.CTGStructureSmoothingLoader;
 import dev.tocraft.ctgen.underground.UndergroundBiomeLoader;
 import dev.tocraft.ctgen.walls.WallGenerator;
 import dev.tocraft.ctgen.walls.WallNetworkLoader;
@@ -58,6 +60,7 @@ public final class CTGNeoForgeEventListener {
         event.addListener(new RiverNetworkLoader());
         event.addListener(new MapWaypointLoader());
         event.addListener(new WallNetworkLoader());
+        event.addListener(new CTGStructureSmoothingLoader());
     }
 
     private static void registerCommands(@NotNull RegisterCommandsEvent event) {
@@ -74,6 +77,7 @@ public final class CTGNeoForgeEventListener {
     }
 
     private static void onServerStarting(@NotNull ServerStartingEvent event) {
+        // load runtime waypoints from world save
         Path waypointFile = event.getServer().getWorldPath(LevelResource.ROOT)
                 .resolve("ctgen_waypoints.json");
         if (Files.exists(waypointFile)) {
@@ -84,6 +88,9 @@ public final class CTGNeoForgeEventListener {
                 LogUtils.getLogger().error("Failed to load CTGen waypoints", e);
             }
         }
+
+        // populate structure ID lookup so smoothing can identify structures
+        CTGStructureSmoothingLoader.populateStructureIdLookup(event.getServer());
     }
 
     private static void onServerStopping(@NotNull ServerStoppingEvent event) {
@@ -92,6 +99,10 @@ public final class CTGNeoForgeEventListener {
         RoadGenerator.clearCaches();
         WallGenerator.clearCaches();
 
+        // clear structure box cache so it doesn't leak between worlds
+        CTGJigsawSmoothing.clearStructureBoxCache();
+
+        // save runtime waypoints to world save
         Path waypointFile = event.getServer().getWorldPath(LevelResource.ROOT)
                 .resolve("ctgen_waypoints.json");
         try {

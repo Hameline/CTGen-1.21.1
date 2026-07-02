@@ -3,16 +3,22 @@ package dev.tocraft.ctgen.fabric;
 import dev.tocraft.ctgen.CTerrainGeneration;
 import dev.tocraft.ctgen.data.BiomeImageRegistry;
 import dev.tocraft.ctgen.data.HeightImageRegistry;
+import dev.tocraft.ctgen.data.MapWaypointLoader;
 import dev.tocraft.ctgen.impl.CTGCommand;
 import dev.tocraft.ctgen.impl.network.SyncMapPacket;
+import dev.tocraft.ctgen.rivers.RiverNetworkLoader;
 import dev.tocraft.ctgen.roads.RoadNetworkLoader;
+import dev.tocraft.ctgen.structures.CTGJigsawSmoothing;
+import dev.tocraft.ctgen.structures.CTGStructureSmoothingLoader;
 import dev.tocraft.ctgen.underground.UndergroundBiomeLoader;
+import dev.tocraft.ctgen.walls.WallNetworkLoader;
 import dev.tocraft.ctgen.worldgen.MapBasedBiomeSource;
 import dev.tocraft.ctgen.worldgen.MapBasedChunkGenerator;
 import dev.tocraft.ctgen.worldgen.noise.CTGAboveSurfaceCondition;
 import dev.tocraft.ctgen.worldgen.noise.CTGTemperatureCondition;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
+import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
 import net.fabricmc.fabric.api.networking.v1.PayloadTypeRegistry;
 import net.fabricmc.fabric.api.resource.IdentifiableResourceReloadListener;
 import net.fabricmc.fabric.api.resource.ResourceManagerHelper;
@@ -56,6 +62,7 @@ public final class CTGFabric implements ModInitializer {
             }
         });
 
+        // register underground biome loader
         UndergroundBiomeLoader undergroundBiomeLoader = new UndergroundBiomeLoader();
         ResourceManagerHelper.get(PackType.SERVER_DATA).registerReloadListener(new IdentifiableResourceReloadListener() {
             @Override
@@ -112,12 +119,101 @@ public final class CTGFabric implements ModInitializer {
             }
         });
 
+        // register river network reload listener
+        RiverNetworkLoader riverNetworkLoader = new RiverNetworkLoader();
+        ResourceManagerHelper.get(PackType.SERVER_DATA).registerReloadListener(new IdentifiableResourceReloadListener() {
+            @Override
+            public ResourceLocation getFabricId() {
+                return CTerrainGeneration.id("river_network_loader");
+            }
+
+            @Override
+            public @NotNull CompletableFuture<Void> reload(PreparationBarrier preparationBarrier, ResourceManager resourceManager, ProfilerFiller preparationsProfiler, ProfilerFiller reloadProfiler, Executor backgroundExecutor, Executor gameExecutor) {
+                return riverNetworkLoader.reload(preparationBarrier, resourceManager, preparationsProfiler, reloadProfiler, backgroundExecutor, gameExecutor);
+            }
+
+            @Override
+            public @NotNull String getName() {
+                return riverNetworkLoader.getName();
+            }
+        });
+
+        // register wall network reload listener
+        WallNetworkLoader wallNetworkLoader = new WallNetworkLoader();
+        ResourceManagerHelper.get(PackType.SERVER_DATA).registerReloadListener(new IdentifiableResourceReloadListener() {
+            @Override
+            public ResourceLocation getFabricId() {
+                return CTerrainGeneration.id("wall_network_loader");
+            }
+
+            @Override
+            public @NotNull CompletableFuture<Void> reload(PreparationBarrier preparationBarrier, ResourceManager resourceManager, ProfilerFiller preparationsProfiler, ProfilerFiller reloadProfiler, Executor backgroundExecutor, Executor gameExecutor) {
+                return wallNetworkLoader.reload(preparationBarrier, resourceManager, preparationsProfiler, reloadProfiler, backgroundExecutor, gameExecutor);
+            }
+
+            @Override
+            public @NotNull String getName() {
+                return wallNetworkLoader.getName();
+            }
+        });
+
+        // register map waypoint reload listener
+        MapWaypointLoader mapWaypointLoader = new MapWaypointLoader();
+        ResourceManagerHelper.get(PackType.SERVER_DATA).registerReloadListener(new IdentifiableResourceReloadListener() {
+            @Override
+            public ResourceLocation getFabricId() {
+                return CTerrainGeneration.id("map_waypoint_loader");
+            }
+
+            @Override
+            public @NotNull CompletableFuture<Void> reload(PreparationBarrier preparationBarrier, ResourceManager resourceManager, ProfilerFiller preparationsProfiler, ProfilerFiller reloadProfiler, Executor backgroundExecutor, Executor gameExecutor) {
+                return mapWaypointLoader.reload(preparationBarrier, resourceManager, preparationsProfiler, reloadProfiler, backgroundExecutor, gameExecutor);
+            }
+
+            @Override
+            public @NotNull String getName() {
+                return mapWaypointLoader.getName();
+            }
+        });
+
+        // register CTGen structure smoothing reload listener
+        CTGStructureSmoothingLoader smoothingLoader = new CTGStructureSmoothingLoader();
+        ResourceManagerHelper.get(PackType.SERVER_DATA).registerReloadListener(new IdentifiableResourceReloadListener() {
+            @Override
+            public ResourceLocation getFabricId() {
+                return CTerrainGeneration.id("ctgen_structure_smoothing_loader");
+            }
+
+            @Override
+            public @NotNull CompletableFuture<Void> reload(PreparationBarrier preparationBarrier, ResourceManager resourceManager, ProfilerFiller preparationsProfiler, ProfilerFiller reloadProfiler, Executor backgroundExecutor, Executor gameExecutor) {
+                return smoothingLoader.reload(preparationBarrier, resourceManager, preparationsProfiler, reloadProfiler, backgroundExecutor, gameExecutor);
+            }
+
+            @Override
+            public @NotNull String getName() {
+                return smoothingLoader.getName();
+            }
+        });
+
+        // populate structure ID lookup on server start
+        ServerLifecycleEvents.SERVER_STARTED.register(
+                CTGStructureSmoothingLoader::populateStructureIdLookup
+        );
+
+        // clear structure box cache on server stop so it doesn't leak between worlds
+        ServerLifecycleEvents.SERVER_STOPPED.register(
+                server -> CTGJigsawSmoothing.clearStructureBoxCache()
+        );
+
         // register commands
-        CommandRegistrationCallback.EVENT.register((dispatcher, context, environment) -> CTGCommand.register(dispatcher, context));
+        CommandRegistrationCallback.EVENT.register((dispatcher, context, environment) ->
+                CTGCommand.register(dispatcher, context));
 
         // register built-in registry entries
-        CTGAboveSurfaceCondition.register((id, codec) -> Registry.register(BuiltInRegistries.MATERIAL_CONDITION, id, codec));
-        CTGTemperatureCondition.register((id, codec) -> Registry.register(BuiltInRegistries.MATERIAL_CONDITION, id, codec));
+        CTGAboveSurfaceCondition.register((id, codec) ->
+                Registry.register(BuiltInRegistries.MATERIAL_CONDITION, id, codec));
+        CTGTemperatureCondition.register((id, codec) ->
+                Registry.register(BuiltInRegistries.MATERIAL_CONDITION, id, codec));
 
         // register network packet type
         PayloadTypeRegistry.playS2C().register(SyncMapPacket.TYPE, SyncMapPacket.streamCodec());
