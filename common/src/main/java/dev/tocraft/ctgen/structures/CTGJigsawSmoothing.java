@@ -1,6 +1,5 @@
 package dev.tocraft.ctgen.structures;
 
-import com.mojang.logging.LogUtils;
 import net.minecraft.core.BlockPos;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.tags.BlockTags;
@@ -12,6 +11,7 @@ import net.minecraft.world.level.levelgen.structure.BoundingBox;
 import net.minecraft.world.level.levelgen.structure.Structure;
 import net.minecraft.world.level.levelgen.structure.StructureStart;
 import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 
 import java.util.Collections;
 import java.util.HashMap;
@@ -27,7 +27,9 @@ public class CTGJigsawSmoothing {
     private static final Map<Structure, ResourceLocation> STRUCTURE_ID_LOOKUP = new HashMap<>();
     private static final Map<ResourceLocation, Structure> STRUCTURE_ID_REVERSE_LOOKUP = new HashMap<>();
 
-    private static final Map<ResourceLocation, List<BoundingBox>> PLACED_STRUCTURE_BOXES = new ConcurrentHashMap<>();
+    public record StructurePlacement(BoundingBox boundingBox, int startPieceY) {}
+
+    private static final Map<ResourceLocation, List<StructurePlacement>> PLACED_STRUCTURE_BOXES = new ConcurrentHashMap<>();
     private static final Set<Long> SMOOTHED_CHUNKS = Collections.newSetFromMap(new ConcurrentHashMap<>());
 
     public record CTGJigsawSmoothingConfig(int transitionWidth, int yOffset) {}
@@ -44,6 +46,11 @@ public class CTGJigsawSmoothing {
     public static boolean isRegisteredForSmoothing(Structure structure) {
         ResourceLocation id = STRUCTURE_ID_LOOKUP.get(structure);
         return id != null && CONFIGS.containsKey(id);
+    }
+
+    @Nullable
+    public static ResourceLocation getStructureId(Structure structure) {
+        return STRUCTURE_ID_LOOKUP.get(structure);
     }
 
     public static int getLookupSize() {
@@ -69,6 +76,7 @@ public class CTGJigsawSmoothing {
         int chunkMaxX = chunkMinX + 15;
         int chunkMaxZ = chunkMinZ + 15;
 
+        // step 1 — query current chunk and cache structure placements
         try {
             List<StructureStart> starts = structureManager.startsForStructure(
                     chunk.getPos(),
@@ -81,25 +89,36 @@ public class CTGJigsawSmoothing {
                 ResourceLocation id = STRUCTURE_ID_LOOKUP.get(structure);
                 if (id == null) continue;
                 BoundingBox box = start.getBoundingBox();
-                List<BoundingBox> boxes = PLACED_STRUCTURE_BOXES
+
+                // use start piece Y as reference — more accurate than overall bounding box minY
+                // for jigsaw structures the start piece is the center/anchor piece
+                int startPieceY = box.minY();
+                if (!start.getPieces().isEmpty()) {
+                    startPieceY = start.getPieces().get(0).getBoundingBox().minY();
+                }
+
+                List<StructurePlacement> placements = PLACED_STRUCTURE_BOXES
                         .computeIfAbsent(id, k -> new CopyOnWriteArrayList<>());
-                if (!boxes.contains(box)) {
-                    boxes.add(box);
+                StructurePlacement placement = new StructurePlacement(box, startPieceY);
+                if (!placements.contains(placement)) {
+                    placements.add(placement);
                 }
             }
         } catch (Exception e) {
             // structure references not available at this generation stage — skip
         }
 
+        // step 2 — check ALL cached placements for ALL registered structures
         for (Map.Entry<ResourceLocation, CTGJigsawSmoothingConfig> entry : CONFIGS.entrySet()) {
             ResourceLocation id = entry.getKey();
             CTGJigsawSmoothingConfig config = entry.getValue();
-            List<BoundingBox> boxes = PLACED_STRUCTURE_BOXES.get(id);
-            if (boxes == null) continue;
+            List<StructurePlacement> placements = PLACED_STRUCTURE_BOXES.get(id);
+            if (placements == null) continue;
 
             int transitionWidth = config.transitionWidth();
 
-            for (BoundingBox box : boxes) {
+            for (StructurePlacement placement : placements) {
+                BoundingBox box = placement.boundingBox();
                 int expandedMinX = box.minX() - transitionWidth;
                 int expandedMaxX = box.maxX() + transitionWidth;
                 int expandedMinZ = box.minZ() - transitionWidth;
@@ -108,7 +127,7 @@ public class CTGJigsawSmoothing {
                 if (chunkMaxX < expandedMinX || chunkMinX > expandedMaxX ||
                         chunkMaxZ < expandedMinZ || chunkMinZ > expandedMaxZ) continue;
 
-                smoothAroundStructure(chunk, box, config);
+                smoothAroundStructure(chunk, box, placement.startPieceY(), config);
             }
         }
     }
@@ -116,6 +135,7 @@ public class CTGJigsawSmoothing {
     public static void smoothAroundStructure(
             @NotNull ChunkAccess chunk,
             @NotNull BoundingBox structureBox,
+            int startPieceY,
             @NotNull CTGJigsawSmoothingConfig config
     ) {
         int transitionWidth = config.transitionWidth();
@@ -130,7 +150,8 @@ public class CTGJigsawSmoothing {
         int footprintMinZ = structureBox.minZ();
         int footprintMaxZ = structureBox.maxZ() + 1;
 
-        int placeY = structureBox.minY() - config.yOffset();
+        // use start piece Y corrected by yOffset as reference for smoothing
+        int placeY = startPieceY - config.yOffset();
 
         BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
 
@@ -144,7 +165,7 @@ public class CTGJigsawSmoothing {
                 int localZ = z - chunkMinZ;
                 int naturalY = getNaturalHeight(chunk, localX, localZ);
 
-                // fill downward
+                // fill downward — no floating structures
                 int fillBottom = Math.max(placeY - 15, chunk.getMinBuildHeight());
                 for (int y = placeY - 1; y >= fillBottom; y--) {
                     pos.set(x, y, z);
@@ -156,7 +177,7 @@ public class CTGJigsawSmoothing {
                     }
                 }
 
-                // clear upward including all vegetation
+                // clear upward — no terrain clipping through structure
                 for (int y = naturalY; y >= placeY; y--) {
                     pos.set(x, y, z);
                     BlockState state = chunk.getBlockState(pos);
@@ -187,17 +208,14 @@ public class CTGJigsawSmoothing {
 
                 int naturalY = getNaturalHeight(chunk, localX, localZ);
 
-                // skip columns with trees — smoothing would place dirt/grass
-                // inside or under trunks and damage forest terrain
+                // skip columns with trees
                 if (hasTreeAbove(chunk, localX, localZ, naturalY - 1)) continue;
 
                 double t = distFromFootprint / transitionWidth;
-                // smootherstep — more gradual at edges than smoothstep
                 double smoothT = t * t * t * (t * (t * 6 - 15) + 10);
                 int targetY = (int) Math.round(placeY + (naturalY - placeY) * smoothT);
 
                 if (targetY < naturalY) {
-                    // clear down to targetY including vegetation
                     for (int y = naturalY; y > targetY; y--) {
                         pos.set(x, y, z);
                         BlockState state = chunk.getBlockState(pos);
@@ -205,14 +223,12 @@ public class CTGJigsawSmoothing {
                             chunk.setBlockState(pos, Blocks.AIR.defaultBlockState(), false);
                         }
                     }
-                    // ensure top block is grass
                     pos.set(x, targetY, z);
                     BlockState top = chunk.getBlockState(pos);
                     if (!top.isAir()) {
                         chunk.setBlockState(pos, Blocks.GRASS_BLOCK.defaultBlockState(), false);
                     }
                 } else if (targetY > naturalY) {
-                    // clear vegetation above current top before raising
                     for (int y = naturalY + 1; y < naturalY + 4; y++) {
                         pos.set(x, y, z);
                         BlockState state = chunk.getBlockState(pos);
@@ -222,13 +238,11 @@ public class CTGJigsawSmoothing {
                             break;
                         }
                     }
-                    // convert existing grass top to dirt before filling
                     pos.set(x, naturalY, z);
                     BlockState existingTop = chunk.getBlockState(pos);
                     if (existingTop.is(Blocks.GRASS_BLOCK)) {
                         chunk.setBlockState(pos, Blocks.DIRT.defaultBlockState(), false);
                     }
-                    // fill with dirt then grass on top
                     for (int y = naturalY + 1; y <= targetY; y++) {
                         pos.set(x, y, z);
                         if (y == targetY) {

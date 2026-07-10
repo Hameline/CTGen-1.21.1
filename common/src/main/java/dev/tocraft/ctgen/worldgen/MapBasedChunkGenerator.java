@@ -129,23 +129,8 @@ public class MapBasedChunkGenerator extends ChunkGenerator {
         RiverNetworkLoader.getNetwork().ifPresent(network -> RiverGenerator.generateRivers(chunk, network));
         WallNetworkLoader.getNetwork().ifPresent(network -> WallGenerator.generateWalls(chunk, network));
 
-        // structure smoothing — runs before features so no vegetation conflicts
+        // structure smoothing
         CTGJigsawSmoothing.smoothChunkAroundStructures(chunk, structures);
-    }
-
-    @Override
-    public void applyBiomeDecoration(
-            @NotNull WorldGenLevel level,
-            @NotNull ChunkAccess chunk,
-            @NotNull StructureManager structureManager
-    ) {
-        // structure smoothing runs before vanilla decoration
-        // at this point structures are placed so bounding boxes are available
-        // but features (trees/grass) have not been placed yet so no vegetation conflicts
-        CTGJigsawSmoothing.smoothChunkAroundStructures(chunk, structureManager);
-
-        // delegate to vanilla for biome decoration (features, plants, etc.)
-        delegate.applyBiomeDecoration(level, chunk, structureManager);
     }
 
     private void buildSurface(ChunkAccess chunk, WorldGenerationContext heightContext, RandomState noiseConfig, StructureManager structureAccessor, BiomeManager biomeAccess, Registry<Biome> biomeRegistry, Blender blender) {
@@ -257,8 +242,6 @@ public class MapBasedChunkGenerator extends ChunkGenerator {
                 }
             }
 
-            // update all heightmaps to reflect CTGen's actual surface height
-            // vanilla structure placement reads WORLD_SURFACE_WG to determine spawn height
             Heightmap heightmapWS = chunk.getOrCreateHeightmapUnprimed(Heightmap.Types.WORLD_SURFACE_WG);
             Heightmap heightmapOS = chunk.getOrCreateHeightmapUnprimed(Heightmap.Types.OCEAN_FLOOR_WG);
             Heightmap heightmapWSC = chunk.getOrCreateHeightmapUnprimed(Heightmap.Types.WORLD_SURFACE);
