@@ -22,6 +22,23 @@ public class CTGenNoiseSettings {
     }
 
     private static NoiseGeneratorSettings overworld(BootstrapContext<?> context) {
-        return new NoiseGeneratorSettings(OVERWORLD_NOISE_SETTINGS, Blocks.STONE.defaultBlockState(), Blocks.WATER.defaultBlockState(), NoiseRouterData.overworld(context.lookup(Registries.DENSITY_FUNCTION), context.lookup(Registries.NOISE), false, false), CTGenSurface.overworld(), Collections.emptyList(), 63, false, true, true, true);
+        return new NoiseGeneratorSettings(
+                OVERWORLD_NOISE_SETTINGS,
+                Blocks.STONE.defaultBlockState(),
+                Blocks.WATER.defaultBlockState(),
+                NoiseRouterData.overworld(
+                        context.lookup(Registries.DENSITY_FUNCTION),
+                        context.lookup(Registries.NOISE),
+                        false,  // isNoiseCavesEnabled — large cheese/spaghetti caves
+                        true    // isLargeCaves — amplified cave generation, generates higher
+                ),
+                CTGenSurface.overworld(),
+                Collections.emptyList(),
+                63,
+                false,
+                true,
+                true,
+                true
+        );
     }
 }

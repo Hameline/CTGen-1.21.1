@@ -129,13 +129,19 @@ public class MapBasedChunkGenerator extends ChunkGenerator {
             }
         }
 
-        // roads/rivers/walls generate after surface
+// roads/rivers/walls generate after surface
         RoadNetworkLoader.getNetwork().ifPresent(network -> RoadGenerator.generateRoads(chunk, network));
         RiverNetworkLoader.getNetwork().ifPresent(network -> RiverGenerator.generateRivers(chunk, network));
         WallNetworkLoader.getNetwork().ifPresent(network -> WallGenerator.generateWalls(chunk, network));
 
-        // structure smoothing
+// mountain surface — stone base with snow/ice
+        applyMountainSurface(chunk);
+
+// structure smoothing
         CTGJigsawSmoothing.smoothChunkAroundStructures(chunk, structures);
+
+// cave entrances — carved last, cuts through everything including mountain features
+        applyCaveEntrances(chunk, chunk.getPos());
     }
 
     private void buildSurface(ChunkAccess chunk, WorldGenerationContext heightContext, RandomState noiseConfig, StructureManager structureAccessor, BiomeManager biomeAccess, Registry<Biome> biomeRegistry, Blender blender) {
@@ -802,6 +808,151 @@ public class MapBasedChunkGenerator extends ChunkGenerator {
                             surfaceY,
                             Blocks.SNOW_BLOCK.defaultBlockState()
                     );
+                }
+            }
+        }
+    }
+
+    private void applyCaveEntrances(@NotNull ChunkAccess chunk, ChunkPos chunkPos) {
+        int searchRadius = 8;
+        for (int cx = chunkPos.x - searchRadius; cx <= chunkPos.x + searchRadius; cx++) {
+            for (int cz = chunkPos.z - searchRadius; cz <= chunkPos.z + searchRadius; cz++) {
+                long chunkHash = hashCoord(cx, 0, cz);
+                if (Math.abs(chunkHash) % 250 != 0) continue;
+
+                long posHash = hashCoord(cx, 1, cz);
+                int seedLocalX = (int)(Math.abs(posHash) % 16);
+                int seedLocalZ = (int)(Math.abs(posHash >> 4) % 16);
+                int seedWorldX = cx * 16 + seedLocalX;
+                int seedWorldZ = cz * 16 + seedLocalZ;
+
+                int surfaceY = (int) getSettings().getHeight(noise, seedWorldX, seedWorldZ);
+                if (surfaceY <= chunk.getMinBuildHeight() + 20) continue;
+
+                long depthHash = hashCoord(cx, 3, cz);
+                int estimatedCaveDepth = 25 + (int)(Math.abs(depthHash) % 225);
+                int caveY = surfaceY - estimatedCaveDepth;
+                if (caveY <= chunk.getMinBuildHeight() + 5) continue;
+
+                // check if the destination is a water cave by scanning blocks
+                // at the estimated cave Y in our chunk if the seed column is within it
+                boolean isWaterCave = false;
+                int seedLocalBx = seedWorldX - chunkPos.getMinBlockX();
+                int seedLocalBz = seedWorldZ - chunkPos.getMinBlockZ();
+                if (seedLocalBx >= 0 && seedLocalBx < 16 && seedLocalBz >= 0 && seedLocalBz < 16) {
+                    BlockPos.MutableBlockPos scanPos = new BlockPos.MutableBlockPos();
+                    int waterCount = 0;
+                    int airCount = 0;
+                    for (int dy = -3; dy <= 3; dy++) {
+                        int checkY = caveY + dy;
+                        if (checkY <= chunk.getMinBuildHeight() || checkY >= chunk.getMaxBuildHeight()) continue;
+                        scanPos.set(seedWorldX, checkY, seedWorldZ);
+                        BlockState state = chunk.getBlockState(scanPos);
+                        if (state.is(Blocks.WATER)) waterCount++;
+                        else if (state.isAir()) airCount++;
+                    }
+                    isWaterCave = waterCount > airCount;
+                }
+
+                carveTunnelToCave(chunk, chunkPos,
+                        seedWorldX, seedWorldZ, surfaceY, caveY, posHash, isWaterCave);
+            }
+        }
+    }
+
+    private void carveTunnelToCave(@NotNull ChunkAccess chunk, ChunkPos chunkPos,
+                                   int startX, int startZ, int surfaceY, int caveY,
+                                   long seed, boolean isWaterCave) {
+        BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
+        int totalDepth = surfaceY - caveY;
+
+        double cp1X = startX + (((seed >> 8) & 0xFF) - 128) * 0.5;
+        double cp1Z = startZ + (((seed >> 16) & 0xFF) - 128) * 0.5;
+        double cp1Y = surfaceY - totalDepth * 0.25 + (((seed >> 24) & 0x3F) - 32) * 0.5;
+
+        double cp2X = startX + (((seed >> 32) & 0xFF) - 128) * 0.8;
+        double cp2Z = startZ + (((seed >> 40) & 0xFF) - 128) * 0.8;
+        double cp2Y = surfaceY - totalDepth * 0.6 + (((seed >> 48) & 0x3F) - 32) * 0.5;
+
+        double endX = startX + (((seed >> 4) & 0xFF) - 128) * 0.6;
+        double endZ = startZ + (((seed >> 6) & 0xFF) - 128) * 0.6;
+        double endY = caveY -8 - (Math.abs(seed >> 2) % 12); //Cutting into the cave to make sure it connects the entrance
+
+        int steps = Math.max(totalDepth * 3, 80);
+
+        for (int step = 0; step <= steps; step++) {
+            double t = (double) step / steps;
+
+            double mt = 1.0 - t;
+            double cx = mt*mt*mt*startX + 3*mt*mt*t*cp1X + 3*mt*t*t*cp2X + t*t*t*endX;
+            double cy = mt*mt*mt*surfaceY + 3*mt*mt*t*cp1Y + 3*mt*t*t*cp2Y + t*t*t*endY;
+            double cz = mt*mt*mt*startZ + 3*mt*mt*t*cp1Z + 3*mt*t*t*cp2Z + t*t*t*endZ;
+
+            int stepChunkX = (int)Math.floor(cx / 16);
+            int stepChunkZ = (int)Math.floor(cz / 16);
+            if (Math.abs(stepChunkX - chunkPos.x) > 2 || Math.abs(stepChunkZ - chunkPos.z) > 2) {
+                continue;
+            }
+
+            // size variation — minimum radius 2.0 (diameter 4), maximum 4.5 (diameter 9)
+            // variation is gentler so size doesn't fluctuate too wildly
+            double sizeNoise1 = Math.sin(t * 7.3 + seed * 0.001) * 0.2;
+            double sizeNoise2 = Math.sin(t * 13.7 + seed * 0.003) * 0.15;
+            double sizeNoise3 = Math.sin(t * 3.1 + seed * 0.007) * 0.15;
+            double sizeBase = 0.4 + 0.6 * Math.sin(t * Math.PI);
+            double sizeFactor = Math.max(0.0, Math.min(1.0,
+                    sizeBase + sizeNoise1 + sizeNoise2 + sizeNoise3));
+
+            // radius 2.0 to 4.5 — diameter 4 to 9 blocks
+            double radius = 2.0 + sizeFactor * 2.5;
+
+            // independent oval radii clamped to size limits
+            double radiusX = Math.max(2.0, Math.min(4.5,
+                    radius * (0.7 + 0.5 * Math.abs(Math.sin(t * 5.1 + seed * 0.002)))));
+            double radiusY = Math.max(2.0, Math.min(4.5,
+                    radius * (0.6 + 0.4 * Math.abs(Math.sin(t * 7.3 + seed * 0.004)))));
+            double radiusZ = Math.max(2.0, Math.min(4.5,
+                    radius * (0.7 + 0.5 * Math.abs(Math.sin(t * 4.7 + seed * 0.006)))));
+
+            int rxi = (int) Math.ceil(radiusX);
+            int ryi = (int) Math.ceil(radiusY);
+            int rzi = (int) Math.ceil(radiusZ);
+
+            // water caves — flood the tunnel from cave Y upward
+            boolean shouldFillWater = isWaterCave && cy <= caveY + 2;
+
+            for (int dx = -rxi; dx <= rxi; dx++) {
+                for (int dy = -ryi; dy <= ryi; dy++) {
+                    for (int dz = -rzi; dz <= rzi; dz++) {
+                        double ellipsoid = (dx * dx) / (radiusX * radiusX)
+                                + (dy * dy) / (radiusY * radiusY)
+                                + (dz * dz) / (radiusZ * radiusZ);
+
+                        double wallNoise = Math.sin(dx * 0.8 + t * 11.3) * 0.15
+                                + Math.sin(dy * 1.1 + t * 7.7) * 0.15
+                                + Math.sin(dz * 0.9 + t * 9.1) * 0.15;
+
+                        if (ellipsoid + wallNoise > 1.0) continue;
+
+                        int bx = (int)(cx + dx);
+                        int by = (int)(cy + dy);
+                        int bz = (int)(cz + dz);
+
+                        int localBx = bx - chunkPos.getMinBlockX();
+                        int localBz = bz - chunkPos.getMinBlockZ();
+                        if (localBx < 0 || localBx >= 16 || localBz < 0 || localBz >= 16) continue;
+                        if (by <= chunk.getMinBuildHeight() || by >= chunk.getMaxBuildHeight()) continue;
+
+                        pos.set(bx, by, bz);
+                        BlockState state = chunk.getBlockState(pos);
+                        if (!state.isAir() && !state.is(Blocks.WATER) && !state.is(Blocks.LAVA)) {
+                            if (shouldFillWater) {
+                                chunk.setBlockState(pos, Blocks.WATER.defaultBlockState(), false);
+                            } else {
+                                chunk.setBlockState(pos, Blocks.AIR.defaultBlockState(), false);
+                            }
+                        }
+                    }
                 }
             }
         }
