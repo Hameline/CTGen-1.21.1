@@ -20,7 +20,6 @@ import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.awt.image.BufferedImage;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -65,14 +64,20 @@ public final class MapSettings {
     private final SimplexNoise noiseX;
     private final SimplexNoise noiseZ;
 
-
+    // cliff noise — seeded per world via setCliffSeed()
+    private volatile SimplexNoise cliffNoise = null;
+    private volatile SimplexNoise cliffJaggedNoise = null;
 
     // blob noise — per zone biome selection, different seed from border noise
-    // cached per zone blob scale so each zone gets its own noise space
     private final Map<Integer, SimplexNoise> blobNoiseCache = new ConcurrentHashMap<>();
 
     @ApiStatus.Internal
-    public MapSettings(ResourceLocation mapId, List<Holder<Zone>> zones, Holder<Zone> defaultBiome, int transition, int scale, double borderNoise, @NotNull Optional<Integer> spawnX, @NotNull Optional<Integer> spawnY, Holder<NoiseGeneratorSettings> noiseGenSettings, List<ResourceLocation> disabledStructureSets, List<ResourceLocation> disabledFeatures) {
+    public MapSettings(ResourceLocation mapId, List<Holder<Zone>> zones, Holder<Zone> defaultBiome,
+                       int transition, int scale, double borderNoise,
+                       @NotNull Optional<Integer> spawnX, @NotNull Optional<Integer> spawnY,
+                       Holder<NoiseGeneratorSettings> noiseGenSettings,
+                       List<ResourceLocation> disabledStructureSets,
+                       List<ResourceLocation> disabledFeatures) {
         this.mapId = mapId;
         this.zones = zones;
         this.defaultBiome = defaultBiome;
@@ -87,10 +92,20 @@ public final class MapSettings {
         this.disabledStructureSets = disabledStructureSets;
         this.disabledFeatures = disabledFeatures;
 
-        this.warpX  = new SimplexNoise(new LegacyRandomSource(111111111L));
-        this.warpZ  = new SimplexNoise(new LegacyRandomSource(222222222L));
+        this.warpX = new SimplexNoise(new LegacyRandomSource(111111111L));
+        this.warpZ = new SimplexNoise(new LegacyRandomSource(222222222L));
         this.noiseX = new SimplexNoise(new LegacyRandomSource(333333333L));
         this.noiseZ = new SimplexNoise(new LegacyRandomSource(444444444L));
+    }
+
+    public void setCliffSeed(long seed) {
+        this.cliffNoise = new SimplexNoise(new LegacyRandomSource(seed ^ 0x9A4E6B3C2F1D8E7AL));
+        this.cliffJaggedNoise = new SimplexNoise(new LegacyRandomSource(seed ^ 0x3F7C1A9B4D2E6F0CL));
+    }
+
+    public double sampleCliffNoise(double x, double z) {
+        if (cliffNoise == null) return 0.0;
+        return cliffNoise.getValue(x, z);
     }
 
     public List<ResourceLocation> getDisabledStructureSets() {
@@ -101,12 +116,6 @@ public final class MapSettings {
         return disabledFeatures;
     }
 
-    /**
-     * Gets the blob noise instance for a given blob scale.
-     * Each unique blob scale gets its own noise instance with a different seed
-     * so zones with different scales don't correlate.
-     * Blob noise uses completely different seeds from border noise.
-     */
     private SimplexNoise getBlobNoise(int blobScale) {
         return blobNoiseCache.computeIfAbsent(blobScale,
                 s -> new SimplexNoise(new LegacyRandomSource(987654321L + s * 31337L)));
@@ -145,10 +154,6 @@ public final class MapSettings {
         };
     }
 
-    /**
-     * Gets the zone holder at noise coordinates.
-     * Applies border distortion before sampling the map image.
-     */
     @NotNull
     public Holder<Zone> getZone(int pX, int pY) {
         int blockX = pX * 4;
@@ -167,8 +172,6 @@ public final class MapSettings {
         }
     }
 
-    // the noise router already knows which biomes can generate underground
-// via its density functions — we just need to declare the common ones
     public Stream<Holder<Biome>> getUndergroundBiomes(HolderGetter<Biome> biomeGetter) {
         return Stream.of(
                 Biomes.DRIPSTONE_CAVES,
@@ -177,11 +180,7 @@ public final class MapSettings {
         ).map(biomeGetter::getOrThrow);
     }
 
-    /**
-     * Gets the actual biome at a block position, applying blob noise within the zone.
-     * This is what MapBasedBiomeSource calls.
-     */
-    public @NotNull Holder<net.minecraft.world.level.biome.Biome> getBiome(int blockX, int blockZ) {
+    public @NotNull Holder<Biome> getBiome(int blockX, int blockZ) {
         Holder<Zone> zoneHolder = getZone(blockX >> 2, blockZ >> 2);
         Zone zone = zoneHolder.value();
 
@@ -192,23 +191,18 @@ public final class MapSettings {
         double frequency = 1.0 / zone.blobScale();
         SimplexNoise blobNoise = getBlobNoise(zone.blobScale());
 
-        // sample at two rotated angles and average them
-        // this breaks the directional bias of simplex noise
-        // making blobs more circular and compact
         double angle1 = blockX * frequency;
         double angle2 = blockZ * frequency;
 
-        // rotate 45 degrees for second sample to break elongation
         double rotX = (blockX + blockZ) * frequency * 0.7071;
         double rotZ = (blockZ - blockX) * frequency * 0.7071;
 
         double noise1 = blobNoise.getValue(angle1, angle2);
         double noise2 = blobNoise.getValue(rotX + 100, rotZ + 100);
 
-        // combine both samples — average breaks elongation
         double noise = (noise1 + noise2) * 0.5;
 
-        Holder<net.minecraft.world.level.biome.Biome> biome = zone.getBiomeForNoise(noise);
+        Holder<Biome> biome = zone.getBiomeForNoise(noise);
         return biome != null ? biome : zone.biomes().get(0).biome();
     }
 
@@ -216,6 +210,9 @@ public final class MapSettings {
         double genHeight = getTransitionedHeight(pX, pY);
         double addHeight = Noise.DEFAULT.getPerlin(noise, pX, pY) * getTransitionedModifier(pX, pY);
         double baseHeight = genHeight + addHeight;
+
+        // apply jaggedness on top of cliff-snapped terrain
+        baseHeight = applyCliffJaggedness(baseHeight, pX, pY);
 
         // apply river carving
         int blockX = pX * 4;
@@ -225,11 +222,27 @@ public final class MapSettings {
                 .orElse(0.0);
 
         if (riverModifier > 0) {
-            // carve down — river modifier is how many blocks to subtract
             return baseHeight - riverModifier;
         }
 
         return baseHeight;
+    }
+
+    private double applyCliffJaggedness(double baseHeight, int pX, int pY) {
+        if (cliffJaggedNoise == null) return baseHeight;
+
+        Holder<Zone> zoneHolder = getZone(pX, pY);
+        Zone zone = zoneHolder.value();
+
+        if (zone.cliffChance() <= 0.0) return baseHeight;
+        if (baseHeight < zone.cliffMinHeight()) return baseHeight;
+
+        // add jaggedness noise to break up flat cliff faces and plateaus
+        double jagFreq = 0.04;
+        double jagAmp = zone.cliffJaggedness() * 5.0;
+        double jag = cliffJaggedNoise.getValue(pX * jagFreq, pY * jagFreq) * jagAmp;
+
+        return baseHeight + jag;
     }
 
     public double getTransitionedModifier(int x, int y) {
@@ -272,6 +285,54 @@ public final class MapSettings {
         double xPercent = Math.abs((double) (x - baseX) / scaledTransition);
         double yPercent = Math.abs((double) (y - baseY) / scaledTransition);
 
+        // check if any corner zone has cliff generation enabled
+        Holder<Zone> zone00 = getZone(baseX >> 2, baseY >> 2);
+        Holder<Zone> zone10 = getZone((baseX + scaledTransition) >> 2, baseY >> 2);
+        Holder<Zone> zone01 = getZone(baseX >> 2, (baseY + scaledTransition) >> 2);
+        Holder<Zone> zone11 = getZone((baseX + scaledTransition) >> 2, (baseY + scaledTransition) >> 2);
+
+        double maxCliffChance = Math.max(
+                Math.max(zone00.value().cliffChance(), zone10.value().cliffChance()),
+                Math.max(zone01.value().cliffChance(), zone11.value().cliffChance())
+        );
+
+        if (maxCliffChance > 0.0 && cliffNoise != null) {
+            int hMin = Math.min(Math.min(h00, h10), Math.min(h01, h11));
+            int hMax = Math.max(Math.max(h00, h10), Math.max(h01, h11));
+            int heightRange = hMax - hMin;
+
+            // only snap when there is significant height variation between corners
+            // and cliff noise says this area should be a cliff
+            if (heightRange > 10) {
+                double cliffFreq = 0.006;
+                double cn = cliffNoise.getValue(x * cliffFreq, y * cliffFreq);
+                double normalizedCn = (cn + 1.0) / 2.0;
+
+                if (normalizedCn > (1.0 - maxCliffChance)) {
+                    // snap each corner to either the max or min height
+                    // based on which side of the midpoint it falls on
+                    // this creates hard plateau/valley boundaries instead of slopes
+                    int hMid = (hMin + hMax) / 2;
+                    int s00 = h00 > hMid ? hMax : hMin;
+                    int s10 = h10 > hMid ? hMax : hMin;
+                    int s01 = h01 > hMid ? hMax : hMin;
+                    int s11 = h11 > hMid ? hMax : hMin;
+
+                    // use smoothstep within same-level regions only
+                    // corners that snapped to the same value will interpolate smoothly
+                    // corners that snapped to different values create the sharp drop
+                    xPercent = smoothStep(xPercent);
+                    yPercent = smoothStep(yPercent);
+
+                    return (s00 * (1 - xPercent) * (1 - yPercent)) +
+                            (s10 * xPercent * (1 - yPercent)) +
+                            (s01 * (1 - xPercent) * yPercent) +
+                            (s11 * xPercent * yPercent);
+                }
+            }
+        }
+
+        // normal smooth interpolation for non-cliff areas
         xPercent = smoothStep(xPercent);
         yPercent = smoothStep(yPercent);
 

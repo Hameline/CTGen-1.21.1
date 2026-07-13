@@ -15,18 +15,16 @@ public class ZoneBuilder {
     private double terrainModifier = Zone.DEFAULT_TERRAIN_MODIFIER;
     private double pixelWeight = Zone.DEFAULT_PIXEL_WEIGHT;
     private int blobScale = Zone.DEFAULT_BLOB_SCALE;
+    private double cliffChance = Zone.DEFAULT_CLIFF_CHANCE;
+    private int cliffMinHeight = Zone.DEFAULT_CLIFF_MIN_HEIGHT;
+    private double cliffJaggedness = Zone.DEFAULT_CLIFF_JAGGEDNESS;
+    private boolean isMountain = Zone.DEFAULT_IS_MOUNTAIN;
 
-    /**
-     * Add a biome with a weight. Weights are relative — they don't need to sum to 1.
-     */
     public ZoneBuilder addBiome(Holder<Biome> biome, double weight) {
         this.biomes.add(new Zone.BiomeEntry(biome, weight));
         return this;
     }
 
-    /**
-     * Convenience method for a single biome zone.
-     */
     public ZoneBuilder setBiome(Holder<Biome> biome) {
         this.biomes.clear();
         this.biomes.add(new Zone.BiomeEntry(biome, 1.0));
@@ -58,7 +56,28 @@ public class ZoneBuilder {
         return this;
     }
 
+    public ZoneBuilder setCliffChance(double cliffChance) {
+        this.cliffChance = cliffChance;
+        return this;
+    }
+
+    public ZoneBuilder setCliffMinHeight(int cliffMinHeight) {
+        this.cliffMinHeight = cliffMinHeight;
+        return this;
+    }
+
+    public ZoneBuilder setCliffJaggedness(double cliffJaggedness) {
+        this.cliffJaggedness = cliffJaggedness;
+        return this;
+    }
+
+    public ZoneBuilder setMountain(boolean isMountain) {
+        this.isMountain = isMountain;
+        return this;
+    }
+
     public Zone build() {
-        return new Zone(biomes, color, terrainModifier, pixelWeight, blobScale);
+        return new Zone(biomes, color, terrainModifier, pixelWeight, blobScale,
+                cliffChance, cliffMinHeight, cliffJaggedness, isMountain);
     }
 }

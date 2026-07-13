@@ -11,6 +11,7 @@ import dev.tocraft.ctgen.roads.RoadNetworkLoader;
 import dev.tocraft.ctgen.structures.CTGJigsawSmoothing;
 import dev.tocraft.ctgen.walls.WallGenerator;
 import dev.tocraft.ctgen.walls.WallNetworkLoader;
+import dev.tocraft.ctgen.zone.Zone;
 import net.minecraft.SharedConstants;
 import net.minecraft.Util;
 import net.minecraft.core.BlockPos;
@@ -101,6 +102,10 @@ public class MapBasedChunkGenerator extends ChunkGenerator {
         }
         WorldGenerationContext heightContext = new WorldGenerationContext(this, region);
         this.buildSurface(chunk, heightContext, noiseConfig, structures, region.getBiomeManager(), biomeRegistry(region), Blender.of(region));
+
+        // apply mountain surface — stone base with snow/ice streaks
+        // runs before snow layer placement so snow layers go on top of snow blocks
+        applyMountainSurface(chunk);
 
         // place snow layers on top of CTGen-placed snow blocks
         BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
@@ -242,6 +247,7 @@ public class MapBasedChunkGenerator extends ChunkGenerator {
                 }
             }
 
+            // update all heightmaps to reflect CTGen's actual surface height
             Heightmap heightmapWS = chunk.getOrCreateHeightmapUnprimed(Heightmap.Types.WORLD_SURFACE_WG);
             Heightmap heightmapOS = chunk.getOrCreateHeightmapUnprimed(Heightmap.Types.OCEAN_FLOOR_WG);
             Heightmap heightmapWSC = chunk.getOrCreateHeightmapUnprimed(Heightmap.Types.WORLD_SURFACE);
@@ -325,6 +331,512 @@ public class MapBasedChunkGenerator extends ChunkGenerator {
         }
 
         return chunk;
+    }
+
+    private void applyMountainSurface(@NotNull ChunkAccess chunk) {
+        ChunkPos chunkPos = chunk.getPos();
+        BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
+        BlockPos.MutableBlockPos below = new BlockPos.MutableBlockPos();
+
+        final int SNOW_START_Y = 90;
+        final int ICE_START_Y = 160;
+        final int POWDER_SNOW_START_Y = 170;
+
+        for (int x = 0; x < 16; x++) {
+            for (int z = 0; z < 16; z++) {
+
+                int worldX = chunkPos.getMinBlockX() + x;
+                int worldZ = chunkPos.getMinBlockZ() + z;
+
+                Zone zone = getSettings().getZone(worldX >> 2, worldZ >> 2).value();
+                if (!zone.isMountain()) continue;
+
+                int surfaceY = chunk.getMaxBuildHeight() - 1;
+                pos.set(worldX, surfaceY, worldZ);
+
+                while (surfaceY > chunk.getMinBuildHeight()
+                        && chunk.getBlockState(pos).isAir()) {
+                    surfaceY--;
+                    pos.set(worldX, surfaceY, worldZ);
+                }
+
+                if (surfaceY <= chunk.getMinBuildHeight()) continue;
+
+                var surfaceState = chunk.getBlockState(pos);
+                if (surfaceState.isAir()) continue;
+
+
+                /*
+                 * Height samples
+                 */
+                double hCenter = getSettings().getHeight(noise, worldX, worldZ);
+
+                double hN1 = getSettings().getHeight(noise, worldX, worldZ - 1);
+                double hS1 = getSettings().getHeight(noise, worldX, worldZ + 1);
+                double hE1 = getSettings().getHeight(noise, worldX + 1, worldZ);
+                double hW1 = getSettings().getHeight(noise, worldX - 1, worldZ);
+
+                double hN4 = getSettings().getHeight(noise, worldX, worldZ - 4);
+                double hS4 = getSettings().getHeight(noise, worldX, worldZ + 4);
+                double hE4 = getSettings().getHeight(noise, worldX + 4, worldZ);
+                double hW4 = getSettings().getHeight(noise, worldX - 4, worldZ);
+
+                double hN8 = getSettings().getHeight(noise, worldX, worldZ - 8);
+                double hS8 = getSettings().getHeight(noise, worldX, worldZ + 8);
+                double hE8 = getSettings().getHeight(noise, worldX + 8, worldZ);
+                double hW8 = getSettings().getHeight(noise, worldX - 8, worldZ);
+
+                double hNE8 = getSettings().getHeight(noise, worldX + 6, worldZ - 6);
+                double hNW8 = getSettings().getHeight(noise, worldX - 6, worldZ - 6);
+                double hSE8 = getSettings().getHeight(noise, worldX + 6, worldZ + 6);
+                double hSW8 = getSettings().getHeight(noise, worldX - 6, worldZ + 6);
+
+
+                double localSlope = Math.max(
+                        Math.abs(hN1 - hS1),
+                        Math.abs(hE1 - hW1)
+                );
+
+                double broadSlope = Math.max(
+                        Math.abs(hN4 - hS4) / 4.0,
+                        Math.abs(hE4 - hW4) / 4.0
+                );
+
+
+                /*
+                 * Slope direction
+                 */
+                double slopeDirX = hE1 - hW1;
+                double slopeDirZ = hS1 - hN1;
+
+                double slopeMag = Math.sqrt(
+                        slopeDirX * slopeDirX +
+                                slopeDirZ * slopeDirZ
+                );
+
+                if (slopeMag > 0.001) {
+                    slopeDirX /= slopeMag;
+                    slopeDirZ /= slopeMag;
+                }
+
+
+                double alongSlope =
+                        worldX * slopeDirX +
+                                worldZ * slopeDirZ;
+
+                double acrossSlope =
+                        worldX * (-slopeDirZ) +
+                                worldZ * slopeDirX;
+
+
+                /*
+                 * Glacier blob noise
+                 */
+                double stoneNoise =
+                        Math.sin(alongSlope * 0.008)
+                                * Math.cos(acrossSlope * 0.04);
+
+                double normalizedStone =
+                        (stoneNoise + 1.0) * 0.5;
+
+
+                /*
+                 * Blob type
+                 *
+                 * 0.0 - 0.55 stone
+                 * 0.55 - 0.8 ice cap blobs
+                 * 0.8 - 1.0 glacier blobs
+                 */
+                double streakType =
+                        (Math.sin(acrossSlope * 0.005 + 31.4) + 1.0) * 0.5;
+
+
+                double blobBottomH = getSettings().getHeight(
+                        noise,
+                        (int)(worldX - 15 * slopeDirX),
+                        (int)(worldZ - 15 * slopeDirZ)
+                );
+
+                double blobTopH = getSettings().getHeight(
+                        noise,
+                        (int)(worldX + 15 * slopeDirX),
+                        (int)(worldZ + 15 * slopeDirZ)
+                );
+
+
+                int blobHeight =
+                        (int)Math.abs(blobTopH - blobBottomH);
+
+
+                int splitY =
+                        (int)(Math.min(blobTopH, blobBottomH)
+                                + blobHeight * 0.45);
+
+
+                long jag = hashCoord(
+                        (int)(acrossSlope * 10),
+                        0,
+                        0
+                );
+
+                splitY += (int)((jag % 11) - 5);
+                /*
+                 * Terrain features
+                 */
+                double minNeighbor1 = Math.min(
+                        Math.min(hN1, hS1),
+                        Math.min(hE1, hW1)
+                );
+
+                double maxNeighbor1 = Math.max(
+                        Math.max(hN1, hS1),
+                        Math.max(hE1, hW1)
+                );
+
+                double minNeighbor4 = Math.min(
+                        Math.min(hN4, hS4),
+                        Math.min(hE4, hW4)
+                );
+
+                double maxNeighbor8 = Math.max(
+                        Math.max(
+                                Math.max(hN8, hS8),
+                                Math.max(hE8, hW8)
+                        ),
+                        Math.max(
+                                Math.max(hNE8, hNW8),
+                                Math.max(hSE8, hSW8)
+                        )
+                );
+
+
+                boolean isPeak =
+                        hCenter >= maxNeighbor8 - 1.0;
+
+                boolean isRidge =
+                        hCenter >= maxNeighbor1 - 0.5;
+
+
+                boolean isTrueGully =
+                        hCenter < minNeighbor1 - 0.3
+                                && hCenter < minNeighbor4 + 1.0
+                                && !isPeak
+                                && !isRidge;
+
+
+                replaceSubsurfaceDirt(
+                        chunk,
+                        below,
+                        worldX,
+                        worldZ,
+                        surfaceY
+                );
+
+
+                /*
+                 * Low mountains remain rock
+                 */
+                if (surfaceY < SNOW_START_Y) {
+
+                    if (!surfaceState.is(Blocks.STONE)
+                            && !surfaceState.is(Blocks.DEEPSLATE)) {
+
+                        chunk.setBlockState(
+                                pos,
+                                Blocks.STONE.defaultBlockState(),
+                                false
+                        );
+                    }
+
+                    continue;
+                }
+
+
+
+                /*
+                 * Cliff faces
+                 *
+                 * More glacier exposure than before
+                 */
+                if (localSlope > 3.0) {
+
+                    if (surfaceY >= ICE_START_Y
+                            && streakType >= 0.45) {
+
+                        chunk.setBlockState(
+                                pos,
+                                Blocks.PACKED_ICE.defaultBlockState(),
+                                false
+                        );
+
+                    } else {
+
+                        if (!surfaceState.is(Blocks.STONE)
+                                && !surfaceState.is(Blocks.DEEPSLATE)) {
+
+                            chunk.setBlockState(
+                                    pos,
+                                    Blocks.STONE.defaultBlockState(),
+                                    false
+                            );
+                        }
+                    }
+
+                    continue;
+                }
+
+
+
+                double heightFactor =
+                        Math.min(
+                                1.0,
+                                (surfaceY - SNOW_START_Y) / 80.0
+                        );
+
+
+                double snowCoverage =
+                        Math.min(
+                                1.0,
+                                (surfaceY - SNOW_START_Y) / 40.0
+                        );
+
+
+                double stoneProbability =
+                        1.0 - snowCoverage;
+
+
+
+                /*
+                 * Blob detection
+                 */
+                boolean inStreakShape = false;
+
+
+                if (localSlope > 1.5) {
+
+                    double steepSnowChance =
+                            Math.min(
+                                    1.0,
+                                    (surfaceY - SNOW_START_Y) / 60.0
+                            );
+
+
+                    if (normalizedStone > steepSnowChance) {
+                        inStreakShape = true;
+                    }
+                }
+
+
+                if (!inStreakShape
+                        && normalizedStone < stoneProbability * 0.4) {
+
+                    inStreakShape = true;
+                }
+
+
+
+                /*
+                 * Glacier blobs
+                 */
+                if (inStreakShape) {
+
+
+                    /*
+                     * Massive glacier blob
+                     */
+                    if (streakType >= 0.8
+                            && surfaceY >= ICE_START_Y - 10) {
+
+                        chunk.setBlockState(
+                                pos,
+                                Blocks.PACKED_ICE.defaultBlockState(),
+                                false
+                        );
+
+
+                        /*
+                         * Mixed stone/ice glacier
+                         *
+                         * Lower split = thicker ice
+                         */
+                    } else if (streakType >= 0.55
+                            && surfaceY >= ICE_START_Y - 5) {
+
+
+                        if (surfaceY >= splitY) {
+
+                            chunk.setBlockState(
+                                    pos,
+                                    Blocks.PACKED_ICE.defaultBlockState(),
+                                    false
+                            );
+
+                        } else {
+
+                            if (!surfaceState.is(Blocks.STONE)
+                                    && !surfaceState.is(Blocks.DEEPSLATE)) {
+
+                                chunk.setBlockState(
+                                        pos,
+                                        Blocks.STONE.defaultBlockState(),
+                                        false
+                                );
+                            }
+                        }
+
+
+                        /*
+                         * Normal mountain rock
+                         */
+                    } else {
+
+                        if (!surfaceState.is(Blocks.STONE)
+                                && !surfaceState.is(Blocks.DEEPSLATE)) {
+
+                            chunk.setBlockState(
+                                    pos,
+                                    Blocks.STONE.defaultBlockState(),
+                                    false
+                            );
+                        }
+                    }
+
+                    continue;
+                }
+
+
+
+                /*
+                 * Natural snow / glacier zones
+                 */
+                if (isTrueGully
+                        && surfaceY >= ICE_START_Y) {
+
+
+                    chunk.setBlockState(
+                            pos,
+                            Blocks.PACKED_ICE.defaultBlockState(),
+                            false
+                    );
+
+
+                } else if ((isPeak || isRidge)
+                        && surfaceY >= POWDER_SNOW_START_Y) {
+
+
+                    chunk.setBlockState(
+                            pos,
+                            Blocks.POWDER_SNOW.defaultBlockState(),
+                            false
+                    );
+
+
+                    fillSnowDepth(
+                            chunk,
+                            below,
+                            worldX,
+                            worldZ,
+                            surfaceY,
+                            Blocks.POWDER_SNOW.defaultBlockState()
+                    );
+
+
+                } else if (surfaceY >= POWDER_SNOW_START_Y) {
+
+
+                    if (broadSlope < 0.5
+                            && heightFactor > 0.5) {
+
+                        chunk.setBlockState(
+                                pos,
+                                Blocks.POWDER_SNOW.defaultBlockState(),
+                                false
+                        );
+
+
+                        fillSnowDepth(
+                                chunk,
+                                below,
+                                worldX,
+                                worldZ,
+                                surfaceY,
+                                Blocks.POWDER_SNOW.defaultBlockState()
+                        );
+
+
+                    } else {
+
+                        chunk.setBlockState(
+                                pos,
+                                Blocks.SNOW_BLOCK.defaultBlockState(),
+                                false
+                        );
+
+
+                        fillSnowDepth(
+                                chunk,
+                                below,
+                                worldX,
+                                worldZ,
+                                surfaceY,
+                                Blocks.SNOW_BLOCK.defaultBlockState()
+                        );
+                    }
+
+
+                } else {
+
+
+                    chunk.setBlockState(
+                            pos,
+                            Blocks.SNOW_BLOCK.defaultBlockState(),
+                            false
+                    );
+
+
+                    fillSnowDepth(
+                            chunk,
+                            below,
+                            worldX,
+                            worldZ,
+                            surfaceY,
+                            Blocks.SNOW_BLOCK.defaultBlockState()
+                    );
+                }
+            }
+        }
+    }
+
+    private void fillSnowDepth(@NotNull ChunkAccess chunk, BlockPos.MutableBlockPos below,
+                               int worldX, int worldZ, int surfaceY,
+                               @NotNull BlockState snowBlock) {
+        // depth between 2 and 5 blocks using position hash for consistency
+        long hash = hashCoord(worldX, surfaceY, worldZ);
+        int depth = 2 + (int)(Math.abs(hash) % 4); // 2 to 5
+        for (int d = 1; d <= depth; d++) {
+            below.set(worldX, surfaceY - d, worldZ);
+            var belowState = chunk.getBlockState(below);
+            if (!belowState.isAir() && !belowState.is(Blocks.WATER) && !belowState.is(Blocks.LAVA)) {
+                chunk.setBlockState(below, snowBlock, false);
+            } else {
+                break;
+            }
+        }
+    }
+
+    private void replaceSubsurfaceDirt(@NotNull ChunkAccess chunk, BlockPos.MutableBlockPos below,
+                                       int worldX, int worldZ, int surfaceY) {
+        for (int depth = 1; depth <= 4; depth++) {
+            below.set(worldX, surfaceY - depth, worldZ);
+            var belowState = chunk.getBlockState(below);
+            if (belowState.is(Blocks.DIRT) || belowState.is(Blocks.GRASS_BLOCK)
+                    || belowState.is(Blocks.COARSE_DIRT) || belowState.is(Blocks.GRAVEL)
+                    || belowState.is(Blocks.SAND)) {
+                chunk.setBlockState(below, Blocks.STONE.defaultBlockState(), false);
+            } else {
+                break;
+            }
+        }
     }
 
     private static long hashCoord(int x, int y, int z) {
@@ -419,6 +931,8 @@ public class MapBasedChunkGenerator extends ChunkGenerator {
             @NotNull RandomState randomState,
             long seed
     ) {
+        // seed cliff noise with world seed so cliffs are consistent per world
+        getSettings().setCliffSeed(seed);
         return delegate.createState(structureSetLookup, randomState, seed);
     }
 
