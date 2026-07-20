@@ -129,18 +129,15 @@ public class MapBasedChunkGenerator extends ChunkGenerator {
             }
         }
 
-// roads/rivers/walls generate after surface
+        // roads/rivers/walls generate after surface
         RoadNetworkLoader.getNetwork().ifPresent(network -> RoadGenerator.generateRoads(chunk, network));
         RiverNetworkLoader.getNetwork().ifPresent(network -> RiverGenerator.generateRivers(chunk, network));
         WallNetworkLoader.getNetwork().ifPresent(network -> WallGenerator.generateWalls(chunk, network));
 
-// mountain surface — stone base with snow/ice
-        applyMountainSurface(chunk);
-
-// structure smoothing
+        // structure smoothing
         CTGJigsawSmoothing.smoothChunkAroundStructures(chunk, structures);
 
-// cave entrances — carved last, cuts through everything including mountain features
+        // cave entrances — carved last, cuts through everything including mountain features
         applyCaveEntrances(chunk, chunk.getPos());
     }
 

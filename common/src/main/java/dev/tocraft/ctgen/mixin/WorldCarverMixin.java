@@ -78,15 +78,12 @@ public class WorldCarverMixin<C extends CarverConfiguration> {
     }
 
     private static boolean isNearRiver(@NotNull RiverNetwork network, int blockX, int blockY, int blockZ) {
-        int seaLevel = 62;
-        if (blockY > seaLevel + RIVER_CAVE_PROTECTION_RADIUS) return false;
-
         for (var river : network.rivers()) {
             double halfWidth = river.type().width() / 2.0;
             double protectionRadius = halfWidth
                     + (halfWidth * river.type().transitionMultiplier())
                     + RIVER_CAVE_PROTECTION_RADIUS;
-            double dist = river.distanceTo(blockX, blockZ);
+            double dist = dev.tocraft.ctgen.rivers.RiverGenerator.distanceToRiver(river, blockX, blockZ);
             if (dist < protectionRadius) return true;
         }
         return false;

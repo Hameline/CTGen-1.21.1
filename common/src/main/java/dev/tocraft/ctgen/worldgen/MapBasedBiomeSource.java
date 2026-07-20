@@ -3,6 +3,8 @@ package dev.tocraft.ctgen.worldgen;
 import com.mojang.serialization.MapCodec;
 import com.mojang.serialization.codecs.RecordCodecBuilder;
 import dev.tocraft.ctgen.CTerrainGeneration;
+import dev.tocraft.ctgen.rivers.RiverGenerator;
+import dev.tocraft.ctgen.rivers.RiverNetworkLoader;
 import dev.tocraft.ctgen.underground.UndergroundBiomeLoader;
 import dev.tocraft.ctgen.zone.Zone;
 import net.minecraft.core.Holder;
@@ -14,7 +16,6 @@ import net.minecraft.world.level.levelgen.LegacyRandomSource;
 import net.minecraft.world.level.levelgen.synth.SimplexNoise;
 import org.jetbrains.annotations.NotNull;
 
-import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Stream;
@@ -27,7 +28,6 @@ public class MapBasedBiomeSource extends BiomeSource {
 
     final MapSettings settings;
 
-    // blob noise cache for underground biomes — separate seeds from surface
     private final Map<Integer, SimplexNoise> undergroundNoiseCache = new ConcurrentHashMap<>();
 
     public MapBasedBiomeSource(MapSettings settings) {
@@ -45,14 +45,18 @@ public class MapBasedBiomeSource extends BiomeSource {
                 .flatMap(zoneHolder -> zoneHolder.value().biomes().stream())
                 .map(Zone.BiomeEntry::biome);
 
-        // include underground biomes if loaded
         Stream<Holder<Biome>> undergroundBiomes = UndergroundBiomeLoader.getSettings()
                 .map(s -> s.zones().stream()
                         .flatMap(zone -> zone.biomes().stream())
                         .map(entry -> entry.biome()))
                 .orElse(Stream.empty());
 
-        return Stream.concat(surfaceBiomes, undergroundBiomes).distinct();
+        Stream<Holder<Biome>> riverBiomes = RiverNetworkLoader.getNetwork()
+                .map(network -> network.rivers().stream()
+                        .flatMap(river -> river.type().biome().stream()))
+                .orElse(Stream.empty());
+
+        return Stream.concat(Stream.concat(surfaceBiomes, undergroundBiomes), riverBiomes).distinct();
     }
 
     private SimplexNoise getUndergroundNoise(int blobScale) {
@@ -67,10 +71,8 @@ public class MapBasedBiomeSource extends BiomeSource {
         int blockZ = pZ * 4;
 
         if (blockY < 0) {
-            // underground — check if underground biome settings exist
             return UndergroundBiomeLoader.getSettings()
                     .map(s -> {
-                        // get the surface color at this position
                         int surfaceColor = getSurfaceColor(pX, pZ);
                         return s.getBiome(surfaceColor, blockX, blockY, blockZ, this::getUndergroundNoise);
                     })
@@ -78,17 +80,22 @@ public class MapBasedBiomeSource extends BiomeSource {
                     .orElseGet(() -> settings.getBiome(blockX, blockZ));
         }
 
+        // check if inside a river using meander-displaced spline points
+        var riverNetwork = RiverNetworkLoader.getNetwork();
+        if (riverNetwork.isPresent()) {
+            for (var river : riverNetwork.get().rivers()) {
+                if (river.type().biome().isEmpty()) continue;
+                double dist = RiverGenerator.distanceToRiver(river, blockX, blockZ);
+                if (dist < river.type().width() / 2.0) {
+                    return river.type().biome().get();
+                }
+            }
+        }
+
         return settings.getBiome(blockX, blockZ);
     }
 
-    /**
-     * Gets the surface map color at noise coordinates.
-     * Used to determine which underground biomes can spawn at this position.
-     */
     private int getSurfaceColor(int noiseX, int noiseZ) {
-        int blockX = noiseX * 4;
-        int blockZ = noiseZ * 4;
-        // use xOffset/yOffset to get the map pixel color
         int pixelX = settings.xOffset(noiseX);
         int pixelY = settings.yOffset(noiseZ);
         java.awt.image.BufferedImage map = settings.getMapImage();

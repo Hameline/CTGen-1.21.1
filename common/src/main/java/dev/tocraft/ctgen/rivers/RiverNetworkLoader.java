@@ -27,6 +27,12 @@ public class RiverNetworkLoader extends SimplePreparableReloadListener<Optional<
     private static final String DIRECTORY = "rivers_gen";
     private static RiverNetwork CURRENT_NETWORK = null;
 
+    private final net.minecraft.core.RegistryAccess registryAccess;
+
+    public RiverNetworkLoader(net.minecraft.core.RegistryAccess registryAccess) {
+        this.registryAccess = registryAccess;
+    }
+
     @Override
     protected @NotNull Optional<RiverNetwork> prepare(@NotNull ResourceManager resourceManager, @NotNull ProfilerFiller profiler) {
         List<River> allRivers = new ArrayList<>();
@@ -35,9 +41,10 @@ public class RiverNetworkLoader extends SimplePreparableReloadListener<Optional<
         FileToIdConverter converter = new FileToIdConverter(DIRECTORY, ".json");
         Map<ResourceLocation, Resource> resources = converter.listMatchingResources(resourceManager);
 
-        if (resources.isEmpty()) {
-            return Optional.empty();
-        }
+        if (resources.isEmpty()) return Optional.empty();
+
+        // use registry ops so biome holders can be resolved
+        var ops = net.minecraft.resources.RegistryOps.create(JsonOps.INSTANCE, registryAccess);
 
         for (Map.Entry<ResourceLocation, Resource> entry : resources.entrySet()) {
             ResourceLocation id = converter.fileToId(entry.getKey());
@@ -49,11 +56,10 @@ public class RiverNetworkLoader extends SimplePreparableReloadListener<Optional<
                 if (!root.has("rivers")) continue;
 
                 for (JsonElement riverEl : root.getAsJsonArray("rivers")) {
-                    River.CODEC.parse(JsonOps.INSTANCE, riverEl)
+                    River.CODEC.parse(ops, riverEl)
                             .resultOrPartial(error -> LogUtils.getLogger().error("Failed to parse river in {}: {}", id, error))
                             .ifPresent(river -> {
                                 allRivers.add(river);
-                                // use the file id + index as name for connection lookup
                                 String name = id.toString() + "_" + allRivers.size();
                                 riversByName.put(name, river);
                             });
@@ -65,11 +71,8 @@ public class RiverNetworkLoader extends SimplePreparableReloadListener<Optional<
             }
         }
 
-        if (allRivers.isEmpty()) {
-            return Optional.empty();
-        }
+        if (allRivers.isEmpty()) return Optional.empty();
 
-        // resolve connections — append connected river waypoints
         resolveConnections(allRivers, riversByName);
 
         LogUtils.getLogger().info("Loaded river network with {} rivers", allRivers.size());
@@ -81,9 +84,7 @@ public class RiverNetworkLoader extends SimplePreparableReloadListener<Optional<
             for (String connectionName : river.connectsTo()) {
                 River connected = byName.get(connectionName);
                 if (connected != null) {
-                    // the connected river starts where this one ends
-                    // this is handled by having both rivers in the list
-                    // their waypoints naturally connect via proximity
+                    // handled by proximity — both rivers in list
                 }
             }
         }

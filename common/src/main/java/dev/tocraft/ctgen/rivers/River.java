@@ -28,13 +28,23 @@ public record River(
         int segment = Math.min((int) scaledT, n - 2);
         double localT = scaledT - segment;
 
-        Waypoint p0 = pts.get(Math.max(segment - 1, 0));
         Waypoint p1 = pts.get(segment);
         Waypoint p2 = pts.get(Math.min(segment + 1, n - 1));
         Waypoint p3 = pts.get(Math.min(segment + 2, n - 1));
 
-        double x = catmullRom(p0.x(), p1.x(), p2.x(), p3.x(), localT);
-        double z = catmullRom(p0.z(), p1.z(), p2.z(), p3.z(), localT);
+        // extrapolate phantom p0 before first point so tangent flows naturally
+        double p0x, p0z;
+        if (segment == 0) {
+            p0x = 2 * p1.x() - p2.x();
+            p0z = 2 * p1.z() - p2.z();
+        } else {
+            Waypoint p0 = pts.get(segment - 1);
+            p0x = p0.x();
+            p0z = p0.z();
+        }
+
+        double x = catmullRom(p0x, p1.x(), p2.x(), p3.x(), localT);
+        double z = catmullRom(p0z, p1.z(), p2.z(), p3.z(), localT);
         return new double[]{x, z};
     }
 
@@ -46,9 +56,15 @@ public record River(
     }
 
     public double distanceTo(double blockX, double blockZ) {
-        int samples = Math.max(waypoints.size() * 20, 40);
+        double totalDist = 0;
+        for (int i = 0; i < waypoints.size() - 1; i++) {
+            double dx = waypoints.get(i + 1).x() - waypoints.get(i).x();
+            double dz = waypoints.get(i + 1).z() - waypoints.get(i).z();
+            totalDist += Math.sqrt(dx * dx + dz * dz);
+        }
+        int samples = Math.max(64, (int) totalDist);
         double minDist = Double.MAX_VALUE;
-        for (int i = 0; i <= samples; i++) {
+        for (int i = 1; i <= samples; i++) {
             double t = (double) i / samples;
             double[] pos = evaluateSpline(t);
             double dx = blockX - pos[0];

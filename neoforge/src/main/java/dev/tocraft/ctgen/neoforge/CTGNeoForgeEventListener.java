@@ -57,7 +57,7 @@ public final class CTGNeoForgeEventListener {
         event.addListener(new HeightImageRegistry());
         event.addListener(new RoadNetworkLoader());
         event.addListener(new UndergroundBiomeLoader());
-        event.addListener(new RiverNetworkLoader());
+        event.addListener(new RiverNetworkLoader(event.getRegistryAccess()));
         event.addListener(new MapWaypointLoader());
         event.addListener(new WallNetworkLoader());
         event.addListener(new CTGStructureSmoothingLoader());

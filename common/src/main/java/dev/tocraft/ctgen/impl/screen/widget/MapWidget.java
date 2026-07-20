@@ -70,17 +70,23 @@ public class MapWidget extends AbstractWidget {
         int mapHeight = packet.getMapHeight();
         int scale = packet.getScale();
         if (mapId != null) {
-            return new MapWidget(minecraft, x, y, width, height, ResourceLocation.fromNamespaceAndPath(mapId.getNamespace(), "textures/gui/" + mapId.getPath() + ".png"), mapId, xOffset, yOffset, mapWidth, mapHeight, scale);
+            return new MapWidget(minecraft, x, y, width, height,
+                    ResourceLocation.fromNamespaceAndPath(mapId.getNamespace(), "textures/gui/" + mapId.getPath() + ".png"),
+                    mapId, xOffset, yOffset, mapWidth, mapHeight, scale);
         }
         return null;
     }
 
-    public MapWidget(Minecraft minecraft, int x, int y, int width, int height, ResourceLocation mapTexId, ResourceLocation mapId, int xOffset, int yOffset, int mapWidth, int mapHeight, int scale) {
-        this(minecraft, x, y, width, height, mapTexId, mapId, xOffset, yOffset, mapWidth, mapHeight, scale, defaultZoom(width, height, mapWidth, mapHeight), true, true, true);
+    public MapWidget(Minecraft minecraft, int x, int y, int width, int height, ResourceLocation mapTexId,
+                     ResourceLocation mapId, int xOffset, int yOffset, int mapWidth, int mapHeight, int scale) {
+        this(minecraft, x, y, width, height, mapTexId, mapId, xOffset, yOffset, mapWidth, mapHeight, scale,
+                defaultZoom(width, height, mapWidth, mapHeight), true, true, true);
     }
 
     @ApiStatus.Internal
-    public MapWidget(Minecraft minecraft, int x, int y, int width, int height, ResourceLocation mapTexId, ResourceLocation mapId, int xOffset, int yOffset, int mapWidth, int mapHeight, int scale, float minZoom, boolean showCursorPos, boolean showPlayer, boolean showTexts) {
+    public MapWidget(Minecraft minecraft, int x, int y, int width, int height, ResourceLocation mapTexId,
+                     ResourceLocation mapId, int xOffset, int yOffset, int mapWidth, int mapHeight, int scale,
+                     float minZoom, boolean showCursorPos, boolean showPlayer, boolean showTexts) {
         super(x, y, width, height, Component.literal("Map Widget"));
         this.minecraft = minecraft;
         this.pixelOffsetX = xOffset;
@@ -111,19 +117,12 @@ public class MapWidget extends AbstractWidget {
         return Math.max((float) width / mapWidth, (float) height / mapHeight);
     }
 
-    public int getMapWidth() {
-        return mapWidth;
-    }
-
-    public int getMapHeight() {
-        return mapHeight;
-    }
+    public int getMapWidth() { return mapWidth; }
+    public int getMapHeight() { return mapHeight; }
 
     public void setMinZoom(float minZoom) {
         this.minZoom = minZoom;
-        if (zoom < minZoom) {
-            zoom = minZoom;
-        }
+        if (zoom < minZoom) zoom = minZoom;
     }
 
     public void setHeight(int height) {
@@ -137,48 +136,31 @@ public class MapWidget extends AbstractWidget {
         updateZoomedWidth();
     }
 
-    @Override
-    public void setX(int x) {
-        super.setX(x);
-    }
-
-    @Override
-    public void setY(int y) {
-        super.setY(y);
-    }
+    @Override public void setX(int x) { super.setX(x); }
+    @Override public void setY(int y) { super.setY(y); }
 
     public void setTexts(List<MapText> texts) {
         this.textOverlays.clear();
         this.textOverlays.addAll(texts);
     }
 
-    public ResourceLocation getMapTexId() {
-        return mapTexId;
-    }
-
-    public double getRatio() {
-        return ratio;
-    }
+    public ResourceLocation getMapTexId() { return mapTexId; }
+    public double getRatio() { return ratio; }
 
     public void resetTextureOffsets() {
-        int playerX;
-        int playerY;
+        int playerX, playerY;
         if (minecraft.player != null) {
             BlockPos blockPos = minecraft.player.blockPosition();
-            int pixelX = (blockPos.getX() / (scale * 4)) + pixelOffsetX;
-            int pixelY = (blockPos.getZ() / (scale * 4)) + pixelOffsetY;
-            playerX = (int) ((double) pixelX / mapWidth * zoomedWidth);
-            playerY = (int) ((double) pixelY / mapHeight * zoomedHeight);
+            double pixelX = ((double) blockPos.getX() / (scale * 4)) + pixelOffsetX;
+            double pixelY = ((double) blockPos.getZ() / (scale * 4)) + pixelOffsetY;
+            playerX = (int) Math.round(pixelX / mapWidth * zoomedWidth);
+            playerY = (int) Math.round(pixelY / mapHeight * zoomedHeight);
         } else {
             playerX = zoomedWidth / 2;
             playerY = zoomedHeight / 2;
         }
-
-        int tX = playerX - width / 2;
-        int tY = playerY - height / 2;
-
-        setTextureOffsetX(tX);
-        setTextureOffsetY(tY);
+        setTextureOffsetX(playerX - width / 2);
+        setTextureOffsetY(playerY - height / 2);
     }
 
     public void setTextureOffsetX(double textureOffsetX) {
@@ -191,33 +173,14 @@ public class MapWidget extends AbstractWidget {
         updateZoomedHeight();
     }
 
-    public int getTextureY() {
-        return (int) (getY() - textureOffsetY);
-    }
+    public int getTextureY() { return (int) (getY() - textureOffsetY); }
+    public int getTextureX() { return (int) (getX() - textureOffsetX); }
+    public int getZoomedHeight() { return zoomedHeight; }
+    public int getZoomedWidth() { return zoomedWidth; }
 
-    public int getTextureX() {
-        return (int) (getX() - textureOffsetX);
-    }
-
-    public int getZoomedHeight() {
-        return zoomedHeight;
-    }
-
-    public int getZoomedWidth() {
-        return zoomedWidth;
-    }
-
-    public void setZoom(double zoom) {
-        this.zoom = Math.max(minZoom, zoom);
-    }
-
-    public double getZoom() {
-        return zoom;
-    }
-
-    public double getReadableZoom() {
-        return zoom * mapWidth / width;
-    }
+    public void setZoom(double zoom) { this.zoom = Math.max(minZoom, zoom); }
+    public double getZoom() { return zoom; }
+    public double getReadableZoom() { return zoom * mapWidth / width; }
 
     private void updateZoomedWidth() {
         zoomedWidth = (int) (mapWidth * zoom);
@@ -233,16 +196,13 @@ public class MapWidget extends AbstractWidget {
         }
     }
 
-    public void setShowCursorPos(boolean showCursorPos) {
-        this.showCursorPos = showCursorPos;
-    }
+    public void setShowCursorPos(boolean showCursorPos) { this.showCursorPos = showCursorPos; }
+    public void setShowPlayer(boolean showPlayer) { this.showPlayer = showPlayer; }
+    public void setShowTexts(boolean showTexts) { this.showTexts = showTexts; }
 
-    public void setShowPlayer(boolean showPlayer) {
-        this.showPlayer = showPlayer;
-    }
-
-    public void setShowTexts(boolean showTexts) {
-        this.showTexts = showTexts;
+    private boolean isMouseOverMap(double mouseX, double mouseY) {
+        return mouseX >= getX() && mouseX < getX() + width
+                && mouseY >= getY() && mouseY < getY() + height;
     }
 
     @Override
@@ -254,16 +214,18 @@ public class MapWidget extends AbstractWidget {
 
         context.flush();
         final double scaleFactor = minecraft.getWindow().getGuiScale();
-        RenderSystem.enableScissor((int) (getX() * scaleFactor), (int) (getY() * scaleFactor), (int) (width * scaleFactor), (int) (height * scaleFactor));
+        RenderSystem.enableScissor(
+                (int) (getX() * scaleFactor), (int) (getY() * scaleFactor),
+                (int) (width * scaleFactor), (int) (height * scaleFactor));
 
         context.blit(mapTexId, getTextureX(), getTextureY(), 0, 0, zoomedWidth, zoomedHeight, zoomedWidth, zoomedHeight);
 
         if (showPlayer) {
             BlockPos blockPos = minecraft.player.blockPosition();
-            int pixelX = (blockPos.getX() / (scale * 4)) + pixelOffsetX;
-            int pixelY = (blockPos.getZ() / (scale * 4)) + pixelOffsetY;
-            int playerX = (int) (getTextureX() + (double) pixelX / mapWidth * zoomedWidth);
-            int playerY = (int) (getTextureY() + (double) pixelY / mapHeight * zoomedHeight);
+            double pixelX = ((double) blockPos.getX() / (scale * 4)) + pixelOffsetX;
+            double pixelY = ((double) blockPos.getZ() / (scale * 4)) + pixelOffsetY;
+            int playerX = (int) Math.round(getTextureX() + pixelX / mapWidth * zoomedWidth);
+            int playerY = (int) Math.round(getTextureY() + pixelY / mapHeight * zoomedHeight);
 
             if (playerX < getTextureX() + 4) playerX = getTextureX() + 4;
             if (playerY < getTextureY() + 4) playerY = getTextureY() + 4;
@@ -289,25 +251,20 @@ public class MapWidget extends AbstractWidget {
                 List<Waypoint> waypoints = road.waypoints();
                 if (waypoints.size() < 2) continue;
                 for (int i = 0; i < waypoints.size() - 1; i++) {
-                    Waypoint from = waypoints.get(i);
-                    Waypoint to = waypoints.get(i + 1);
-                    drawRoadSegment(context, from, to, road.minZoom(), road.maxZoom());
+                    drawRoadSegment(context, waypoints.get(i), waypoints.get(i + 1), road.minZoom(), road.maxZoom());
                 }
             }
         });
 
-        // render waypoints — keyed by mapId, not player dimension
-        // mapId matches the waypoint file name e.g. agotmod:known_world
         for (MapWaypoint waypoint : MapWaypointLoader.getWaypoints(mapId)) {
             renderWaypoint(context, waypoint);
         }
 
-        if (isHovered && showCursorPos) {
-            // convert mouse pixel position to world block coordinates
-            int mousePixelX = mousePixelX(mouseX);
-            int mousePixelY = mousePixelY(mouseY);
-            int worldX = (mousePixelX - pixelOffsetX) * scale * 4;
-            int worldZ = (mousePixelY - pixelOffsetY) * scale * 4;
+        if (isMouseOverMap(mouseX, mouseY) && showCursorPos) {
+            double mousePixelX = mousePixelXDouble(mouseX);
+            double mousePixelY = mousePixelYDouble(mouseY);
+            int worldX = (int) Math.round((mousePixelX - pixelOffsetX) * scale * 4);
+            int worldZ = (int) Math.round((mousePixelY - pixelOffsetY) * scale * 4);
 
             Component textPos = Component.translatable("ctgen.screen.mouse_pos",
                     Component.translatable("ctgen.coordinates", worldX, worldZ));
@@ -318,14 +275,12 @@ public class MapWidget extends AbstractWidget {
             pose.pushPose();
             pose.scale(0.5f, 0.5f, 1f);
 
-            // cursor coordinates — bottom center
             int posWidth = minecraft.font.width(textPos);
             context.drawString(minecraft.font, textPos,
                     (int) (getX() / 0.5f + width / 1.0f - (float) posWidth / 2),
                     (int) ((getY() + (height - (float) height / 8)) / 0.5f),
                     0xFFFFFF);
 
-            // zoom level — top right
             int zoomWidth = minecraft.font.width(textZoom);
             context.drawString(minecraft.font, textZoom,
                     (int) ((getX() + width) / 0.5f - zoomWidth - 4),
@@ -349,14 +304,12 @@ public class MapWidget extends AbstractWidget {
 
                     PoseStack pose = context.pose();
                     pose.pushPose();
-
                     pose.translate(px, py, 0);
                     pose.mulPose(Axis.ZP.rotationDegrees(entry.rotation()));
                     pose.scale((float) zoom * entry.size(), (float) zoom * entry.size(), 1f);
 
                     Component text = Component.translatable(entry.text().getString()).withStyle(entry.text().getStyle());
                     context.drawString(minecraft.font, text, 0, 0, color);
-
                     pose.popPose();
                 }
             }
@@ -366,36 +319,22 @@ public class MapWidget extends AbstractWidget {
         RenderSystem.disableScissor();
     }
 
-    /**
-     * Converts a world X coordinate to a screen X coordinate on the map widget.
-     */
     private int worldToScreenX(int worldX) {
         int pixelX = (worldX / (scale * 4)) + pixelOffsetX;
         return getTextureX() + (int) ((double) pixelX / mapWidth * zoomedWidth);
     }
 
-    /**
-     * Converts a world Z coordinate to a screen Y coordinate on the map widget.
-     */
     private int worldToScreenY(int worldZ) {
         int pixelZ = (worldZ / (scale * 4)) + pixelOffsetY;
         return getTextureY() + (int) ((double) pixelZ / mapHeight * zoomedHeight);
     }
 
-    /**
-     * Draws a dotted line between two waypoints on the map.
-     * The dot size and spacing are fixed in screen pixels so they
-     * don't scale with zoom.
-     */
-    private void drawRoadSegment(@NotNull GuiGraphics context, @NotNull Waypoint from, @NotNull Waypoint to, float minZoom, float maxZoom) {
+    private void drawRoadSegment(@NotNull GuiGraphics context, @NotNull Waypoint from, @NotNull Waypoint to,
+                                 float minZoom, float maxZoom) {
         double readableZoom = getReadableZoom();
-
-        // disappears when zoomed out past minZoom
-        // always visible when zooming in — no max zoom cutoff unless explicitly set
         if (readableZoom < minZoom) return;
         if (maxZoom != -1 && readableZoom > maxZoom) return;
 
-        // fade in near minZoom threshold
         float opacity = 1.0f;
         if (minZoom > 0) {
             float fadeRange = minZoom * 0.3f;
@@ -449,7 +388,6 @@ public class MapWidget extends AbstractWidget {
             double segDx = curr[0] - prev[0];
             double segDz = curr[1] - prev[1];
             double segLen = Math.sqrt(segDx * segDx + segDz * segDz);
-
             if (segLen < 0.0001) continue;
 
             double walked = 0;
@@ -459,7 +397,6 @@ public class MapWidget extends AbstractWidget {
                     accumulated += segLen - walked;
                     break;
                 }
-
                 walked += remaining;
                 accumulated = 0;
                 drawing = !drawing;
@@ -468,7 +405,6 @@ public class MapWidget extends AbstractWidget {
                     double frac = walked / segLen;
                     int px = (int) Math.round(prev[0] + segDx * frac);
                     int py = (int) Math.round(prev[1] + segDz * frac);
-
                     if (px >= getX() && px < getX() + width && py >= getY() && py < getY() + height) {
                         context.fill(px - 1, py - 1, px + 2, py + 2, outerColor);
                         context.fill(px, py, px + 1, py + 1, innerColor);
@@ -486,7 +422,6 @@ public class MapWidget extends AbstractWidget {
 
         if (screenX < getX() || screenX >= getX() + width || screenY < getY() || screenY >= getY() + height) return;
 
-        // --- dot ---
         boolean showDot = readableZoom >= waypoint.minZoom()
                 && (waypoint.maxZoom() == -1 || readableZoom <= waypoint.maxZoom());
 
@@ -517,7 +452,6 @@ public class MapWidget extends AbstractWidget {
             }
         }
 
-        // --- text ---
         boolean showText = readableZoom >= waypoint.textMinZoom()
                 && (waypoint.textMaxZoom() == -1 || readableZoom <= waypoint.textMaxZoom());
 
@@ -543,8 +477,9 @@ public class MapWidget extends AbstractWidget {
                 String name = waypoint.name();
                 int textWidth = minecraft.font.width(name);
 
-                // dot radius for positioning — use 1 if dot is not shown
-                int dotRadius = showDot ? (int) Math.round((1 + Math.min(readableZoom / Math.max(waypoint.minZoom(), 0.01f), 2.0) * 0.8) * 0.7) : 1;
+                int dotRadius = showDot
+                        ? (int) Math.round((1 + Math.min(readableZoom / Math.max(waypoint.minZoom(), 0.01f), 2.0) * 0.8) * 0.7)
+                        : 1;
 
                 PoseStack pose = context.pose();
                 pose.pushPose();
@@ -556,14 +491,8 @@ public class MapWidget extends AbstractWidget {
                 int bgAlpha = (int) (textOpacity * 80);
                 int bgColor = (bgAlpha << 24) | 0x000000;
                 int padding = 2;
-                context.fill(
-                        nameX - padding,
-                        nameY - padding,
-                        nameX + textWidth + padding,
-                        nameY + minecraft.font.lineHeight + padding,
-                        bgColor
-                );
-
+                context.fill(nameX - padding, nameY - padding,
+                        nameX + textWidth + padding, nameY + minecraft.font.lineHeight + padding, bgColor);
                 context.drawString(minecraft.font, name, nameX, nameY, nameColor, false);
                 pose.popPose();
             }
@@ -574,7 +503,6 @@ public class MapWidget extends AbstractWidget {
         int outerColor = 0xFF004499;
         int innerColor = 0xFF0066FF;
 
-        // high resolution sampling — one sample per 2 world blocks of estimated length
         List<dev.tocraft.ctgen.roads.Waypoint> wps = river.waypoints();
         double totalDist = 0;
         for (int i = 0; i < wps.size() - 1; i++) {
@@ -584,13 +512,11 @@ public class MapWidget extends AbstractWidget {
         }
         int samples = Math.max(256, (int) (totalDist / 2));
 
-        // precompute screen positions in double precision — no integer truncation
         List<double[]> screenPoints = new ArrayList<>(samples + 1);
         for (int i = 0; i <= samples; i++) {
             double t = (double) i / samples;
             double[] pos = river.evaluateSpline(t);
 
-            // same double-precision conversion as the road fix
             double pixelX = (pos[0] / (scale * 4)) + pixelOffsetX;
             double pixelZ = (pos[1] / (scale * 4)) + pixelOffsetY;
             double screenX = getTextureX() + pixelX / mapWidth * zoomedWidth;
@@ -599,8 +525,7 @@ public class MapWidget extends AbstractWidget {
             screenPoints.add(new double[]{screenX, screenY});
         }
 
-        // walk at fixed pixel intervals — consistent spacing at any zoom
-        double dotSpacing = 3.0; // slightly tighter than roads since rivers are solid lines
+        double dotSpacing = 3.0;
         double accumulated = 0;
         boolean drawing = true;
 
@@ -611,7 +536,6 @@ public class MapWidget extends AbstractWidget {
             double segDx = curr[0] - prev[0];
             double segDz = curr[1] - prev[1];
             double segLen = Math.sqrt(segDx * segDx + segDz * segDz);
-
             if (segLen < 0.0001) continue;
 
             double walked = 0;
@@ -621,7 +545,6 @@ public class MapWidget extends AbstractWidget {
                     accumulated += segLen - walked;
                     break;
                 }
-
                 walked += remaining;
                 accumulated = 0;
                 drawing = !drawing;
@@ -630,7 +553,6 @@ public class MapWidget extends AbstractWidget {
                     double frac = walked / segLen;
                     int px = (int) Math.round(prev[0] + segDx * frac);
                     int py = (int) Math.round(prev[1] + segDz * frac);
-
                     if (px >= getX() && px < getX() + width && py >= getY() && py < getY() + height) {
                         context.fill(px - 1, py - 1, px + 2, py + 2, outerColor);
                         context.fill(px, py, px + 1, py + 1, innerColor);
@@ -640,11 +562,8 @@ public class MapWidget extends AbstractWidget {
         }
     }
 
-    /**
-     * Draws a filled circle with an inner color and outer color.
-     * Each pixel is colored based on its distance from the center.
-     */
-    private void drawFilledCircle(@NotNull GuiGraphics context, int cx, int cy, int outerRadius, int innerRadius, int outerColor, int innerColor) {
+    private void drawFilledCircle(@NotNull GuiGraphics context, int cx, int cy, int outerRadius, int innerRadius,
+                                  int outerColor, int innerColor) {
         for (int px = -outerRadius; px <= outerRadius; px++) {
             for (int py = -outerRadius; py <= outerRadius; py++) {
                 double dist = Math.sqrt(px * px + py * py);
@@ -659,30 +578,16 @@ public class MapWidget extends AbstractWidget {
 
     @Override
     public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
-        boolean bl = super.keyPressed(keyCode, scanCode, modifiers);
-        if (keyCode == GLFW.GLFW_KEY_W || keyCode == GLFW.GLFW_KEY_UP) {
-            textureOffsetY -= MOVE_SPEED;
-            return true;
-        }
-        if (keyCode == GLFW.GLFW_KEY_S || keyCode == GLFW.GLFW_KEY_DOWN) {
-            textureOffsetY += MOVE_SPEED;
-            return true;
-        }
-        if (keyCode == GLFW.GLFW_KEY_A || keyCode == GLFW.GLFW_KEY_LEFT) {
-            textureOffsetX -= MOVE_SPEED;
-            return true;
-        }
-        if (keyCode == GLFW.GLFW_KEY_D || keyCode == GLFW.GLFW_KEY_RIGHT) {
-            textureOffsetX += MOVE_SPEED;
-            return true;
-        }
+        super.keyPressed(keyCode, scanCode, modifiers);
+        if (keyCode == GLFW.GLFW_KEY_W || keyCode == GLFW.GLFW_KEY_UP) { textureOffsetY -= MOVE_SPEED; return true; }
+        if (keyCode == GLFW.GLFW_KEY_S || keyCode == GLFW.GLFW_KEY_DOWN) { textureOffsetY += MOVE_SPEED; return true; }
+        if (keyCode == GLFW.GLFW_KEY_A || keyCode == GLFW.GLFW_KEY_LEFT) { textureOffsetX -= MOVE_SPEED; return true; }
+        if (keyCode == GLFW.GLFW_KEY_D || keyCode == GLFW.GLFW_KEY_RIGHT) { textureOffsetX += MOVE_SPEED; return true; }
         if (keyCode == GLFW.GLFW_KEY_RIGHT_BRACKET || keyCode == GLFW.GLFW_KEY_KP_ADD) {
-            zoom(ZOOM_FACTOR, (double) width / 2, (double) height / 2);
-            return true;
+            zoom(ZOOM_FACTOR, (double) width / 2, (double) height / 2); return true;
         }
         if (keyCode == GLFW.GLFW_KEY_SLASH || keyCode == GLFW.GLFW_KEY_KP_SUBTRACT) {
-            zoom(1 / ZOOM_FACTOR, (double) width / 2, (double) height / 2);
-            return true;
+            zoom(1 / ZOOM_FACTOR, (double) width / 2, (double) height / 2); return true;
         }
         return false;
     }
@@ -694,12 +599,12 @@ public class MapWidget extends AbstractWidget {
             //#else
             //$$ if (active && visible && button == 1 && minecraft != null && minecraft.player != null && clicked(mouseX, mouseY)) {
             //#endif
-            if (isHovered) {
+            if (isMouseOverMap(mouseX, mouseY)) {
                 if (minecraft.player.hasPermissions(2)) {
-                    int mousePixelX = mousePixelX(mouseX);
-                    int mousePixelY = mousePixelY(mouseY);
-                    int worldX = (mousePixelX - pixelOffsetX) * scale * 4;
-                    int worldZ = (mousePixelY - pixelOffsetY) * scale * 4;
+                    double mousePixelX = mousePixelXDouble(mouseX);
+                    double mousePixelY = mousePixelYDouble(mouseY);
+                    int worldX = (int) Math.round((mousePixelX - pixelOffsetX) * scale * 4);
+                    int worldZ = (int) Math.round((mousePixelY - pixelOffsetY) * scale * 4);
                     minecraft.player.connection.sendCommand("ctgen teleport " + worldX + " " + worldZ);
                     this.playDownSound(minecraft.getSoundManager());
                     active = false;
@@ -718,17 +623,18 @@ public class MapWidget extends AbstractWidget {
         return (int) ((mouseY - getTextureY()) / zoomedHeight * mapHeight);
     }
 
+    public double mousePixelXDouble(double mouseX) {
+        return (mouseX - getTextureX()) / zoomedWidth * mapWidth;
+    }
+
+    public double mousePixelYDouble(double mouseY) {
+        return (mouseY - getTextureY()) / zoomedHeight * mapHeight;
+    }
+
     @Override
     public boolean mouseScrolled(double mouseX, double mouseY, double deltaX, double deltaY) {
-        double value;
-        if (deltaY > 0) {
-            value = ZOOM_FACTOR;
-        } else if (deltaY < 0) {
-            value = 1 / ZOOM_FACTOR;
-        } else {
-            value = 1;
-        }
-        if (isHovered) {
+        double value = deltaY > 0 ? ZOOM_FACTOR : deltaY < 0 ? 1 / ZOOM_FACTOR : 1;
+        if (isMouseOverMap(mouseX, mouseY)) {
             zoom(value, mouseX - getX(), mouseY - getY());
         } else {
             zoom(value, (double) width / 2, (double) height / 2);
@@ -747,8 +653,6 @@ public class MapWidget extends AbstractWidget {
             updateZoomedWidth();
         }
     }
-
-
 
     @Override
     public void onDrag(double mouseX, double mouseY, double dragX, double dragY) {

@@ -58,10 +58,17 @@ public class RiverGenerator {
 
             List<int[]> allSplinePoints = getOrComputeSplinePoints(river);
 
+            // expand bounding box to include raw first waypoint
+            // so its chunk is not culled before carving starts
+            Waypoint firstWp = river.waypoints().get(0);
+            List<int[]> boundsPoints = new ArrayList<>(allSplinePoints.size() + 1);
+            boundsPoints.add(new int[]{(int) firstWp.x(), (int) firstWp.z()});
+            boundsPoints.addAll(allSplinePoints);
+
             int influence = (int)(river.type().width() * river.type().transitionMultiplier() * 1.25) + 50;
             int minX = Integer.MAX_VALUE, maxX = Integer.MIN_VALUE;
             int minZ = Integer.MAX_VALUE, maxZ = Integer.MIN_VALUE;
-            for (int[] pt : allSplinePoints) {
+            for (int[] pt : boundsPoints) {
                 minX = Math.min(minX, pt[0] - influence);
                 maxX = Math.max(maxX, pt[0] + influence);
                 minZ = Math.min(minZ, pt[1] - influence);
@@ -85,6 +92,18 @@ public class RiverGenerator {
 
             generateRiver(chunk, river, nearbyPoints, fordSegments, chunkMinX, chunkMinZ, chunkMaxX, chunkMaxZ);
         }
+    }
+
+    public static double distanceToRiver(River river, double blockX, double blockZ) {
+        List<int[]> points = getOrComputeSplinePoints(river);
+        double minDist = Double.MAX_VALUE;
+        for (int[] pt : points) {
+            double dx = blockX - pt[0];
+            double dz = blockZ - pt[1];
+            double dist = Math.sqrt(dx * dx + dz * dz);
+            if (dist < minDist) minDist = dist;
+        }
+        return minDist;
     }
 
     public static void clearCaches() {
@@ -115,10 +134,14 @@ public class RiverGenerator {
             double x = pos[0];
             double z = pos[1];
 
-            // skip meandering on the very last point so it connects cleanly to endpoint
             boolean isEndpoint = (i == samples);
 
             if (!isEndpoint) {
+                // fade meander in over the first 15% so the start connects cleanly
+                // use smoothstep so the transition is gradual rather than linear
+                double rawFade = Math.min(1.0, t / 0.15);
+                double meanderFade = rawFade * rawFade * (3 - 2 * rawFade);
+
                 if (meanderStrength > 0) {
                     double tAhead = Math.min(1.0, t + 1.0 / samples);
                     double[] posAhead = river.evaluateSpline(tAhead);
@@ -131,7 +154,7 @@ public class RiverGenerator {
                         double frequency = 0.0005 + meanderStrength * 0.003;
                         double amplitude = river.type().width() * (2.0 + meanderStrength * 8.0);
                         double pathDist = t * totalDist;
-                        double displacement = MEANDER_NOISE_X.getValue(pathDist * frequency, 0) * amplitude;
+                        double displacement = MEANDER_NOISE_X.getValue(pathDist * frequency, 0) * amplitude * meanderFade;
                         x += perpX * displacement;
                         z += perpZ * displacement;
                     }
@@ -140,10 +163,10 @@ public class RiverGenerator {
                 {
                     double frequency = MEANDER_BASE_FREQUENCY * (1.0 + 0.1 * 3.0);
                     double amplitude = MEANDER_BASE_AMPLITUDE * 0.1;
-                    double dispX = MEANDER_NOISE_X.getValue(x * frequency, z * frequency) * amplitude
-                            + MEANDER_NOISE_X.getValue(x * frequency * 2.5 + 100, z * frequency * 2.5 + 100) * amplitude * 0.4;
-                    double dispZ = MEANDER_NOISE_Z.getValue(x * frequency + 200, z * frequency + 200) * amplitude
-                            + MEANDER_NOISE_Z.getValue(x * frequency * 2.5 + 300, z * frequency * 2.5 + 300) * amplitude * 0.4;
+                    double dispX = (MEANDER_NOISE_X.getValue(x * frequency, z * frequency) * amplitude
+                            + MEANDER_NOISE_X.getValue(x * frequency * 2.5 + 100, z * frequency * 2.5 + 100) * amplitude * 0.4) * meanderFade;
+                    double dispZ = (MEANDER_NOISE_Z.getValue(x * frequency + 200, z * frequency + 200) * amplitude
+                            + MEANDER_NOISE_Z.getValue(x * frequency * 2.5 + 300, z * frequency * 2.5 + 300) * amplitude * 0.4) * meanderFade;
                     x += dispX;
                     z += dispZ;
                 }
