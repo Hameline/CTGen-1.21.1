@@ -13,16 +13,47 @@ import net.minecraft.world.level.levelgen.synth.SimplexNoise;
 import org.jetbrains.annotations.NotNull;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
 public class RiverGenerator {
 
-    private static final int MAX_CACHE_SIZE = 50;
+    // per-river caches (full spline / spatial index / bounds / fords) — sized generously so a
+    // large network with many interconnected rivers doesn't evict and force an O(river length)
+    // spline recompute for a river that's still in active use
+    private static final int MAX_CACHE_SIZE = 500;
+    private static final int SPATIAL_BUCKET_SIZE = 256;
 
+    // per-chunk spline point cache keyed by (river hashCode << 32 | chunkKey)
+    // avoids computing the full river spline on first load — only computes what each chunk needs
+    private static final Map<Long, List<int[]>> CHUNK_POINT_CACHE = new java.util.LinkedHashMap<>(512, 0.75f, true) {
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<Long, List<int[]>> eldest) {
+            return size() > 4000;
+        }
+    };
+
+    // full spline cache — only populated after all chunks have been visited, used for spatial index
     private static final Map<River, List<int[]>> RIVER_POINT_CACHE = new java.util.LinkedHashMap<>(16, 0.75f, true) {
         @Override
         protected boolean removeEldestEntry(Map.Entry<River, List<int[]>> eldest) {
+            return size() > MAX_CACHE_SIZE;
+        }
+    };
+
+    // spatial index cache — built lazily from RIVER_POINT_CACHE
+    private static final Map<River, Map<Long, List<int[]>>> SPATIAL_INDEX_CACHE = new java.util.LinkedHashMap<>(16, 0.75f, true) {
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<River, Map<Long, List<int[]>>> eldest) {
+            return size() > MAX_CACHE_SIZE;
+        }
+    };
+
+    // bounding box cache per river
+    private static final Map<River, int[]> BOUNDS_CACHE = new java.util.LinkedHashMap<>(16, 0.75f, true) {
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<River, int[]> eldest) {
             return size() > MAX_CACHE_SIZE;
         }
     };
@@ -56,59 +87,154 @@ public class RiverGenerator {
         for (River river : network.rivers()) {
             if (river.waypoints().size() < 2) continue;
 
-            List<int[]> allSplinePoints = getOrComputeSplinePoints(river);
-
-            // expand bounding box to include raw first waypoint
-            // so its chunk is not culled before carving starts
-            Waypoint firstWp = river.waypoints().get(0);
-            List<int[]> boundsPoints = new ArrayList<>(allSplinePoints.size() + 1);
-            boundsPoints.add(new int[]{(int) firstWp.x(), (int) firstWp.z()});
-            boundsPoints.addAll(allSplinePoints);
-
             int influence = (int)(river.type().width() * river.type().transitionMultiplier() * 1.25) + 50;
-            int minX = Integer.MAX_VALUE, maxX = Integer.MIN_VALUE;
-            int minZ = Integer.MAX_VALUE, maxZ = Integer.MIN_VALUE;
-            for (int[] pt : boundsPoints) {
-                minX = Math.min(minX, pt[0] - influence);
-                maxX = Math.max(maxX, pt[0] + influence);
-                minZ = Math.min(minZ, pt[1] - influence);
-                maxZ = Math.max(maxZ, pt[1] + influence);
-            }
 
-            if (chunkMaxX < minX || chunkMinX > maxX || chunkMaxZ < minZ || chunkMinZ > maxZ) continue;
+            // fast waypoint-based bounding box reject — uses raw waypoints, no spline needed
+            if (!isChunkNearWaypoints(river, chunkMinX, chunkMinZ, chunkMaxX, chunkMaxZ, influence)) continue;
 
-            int searchRadius = influence + 16;
-            List<int[]> nearbyPoints = new ArrayList<>();
-            for (int[] pt : allSplinePoints) {
-                if (pt[0] >= chunkMinX - searchRadius && pt[0] <= chunkMaxX + searchRadius &&
-                        pt[1] >= chunkMinZ - searchRadius && pt[1] <= chunkMaxZ + searchRadius) {
-                    nearbyPoints.add(pt);
-                }
-            }
-
+            // fetch only the spline points relevant to this chunk from the spatial index —
+            // the full (meandered) spline is still computed once per river, not once per chunk
+            List<int[]> nearbyPoints = getOrComputeChunkPoints(river, chunkMinX, chunkMinZ, chunkMaxX, chunkMaxZ, influence);
             if (nearbyPoints.isEmpty()) continue;
 
+            // ford segments still need the full spline — but computed lazily on first ford chunk
+            List<int[]> allSplinePoints = getOrComputeSplinePoints(river);
             List<double[]> fordSegments = getOrComputeFordSegments(river, allSplinePoints);
 
             generateRiver(chunk, river, nearbyPoints, fordSegments, chunkMinX, chunkMinZ, chunkMaxX, chunkMaxZ);
         }
     }
 
+    // fast reject using raw waypoints only — avoids spline computation for distant chunks
+    private static boolean isChunkNearWaypoints(River river,
+                                                int chunkMinX, int chunkMinZ, int chunkMaxX, int chunkMaxZ, int influence) {
+        List<Waypoint> wps = river.waypoints();
+        for (int i = 0; i < wps.size() - 1; i++) {
+            double ax = wps.get(i).x(), az = wps.get(i).z();
+            double bx = wps.get(i+1).x(), bz = wps.get(i+1).z();
+            double segMinX = Math.min(ax, bx) - influence;
+            double segMaxX = Math.max(ax, bx) + influence;
+            double segMinZ = Math.min(az, bz) - influence;
+            double segMaxZ = Math.max(az, bz) + influence;
+            if (chunkMaxX >= segMinX && chunkMinX <= segMaxX &&
+                    chunkMaxZ >= segMinZ && chunkMinZ <= segMaxZ) return true;
+        }
+        return false;
+    }
+
+    // fetch spline points only for the portion of the river near this chunk, via the
+    // per-river spatial index. The full spline (with meander noise applied) is only ever
+    // walked once per river — here we just bucket-lookup the slice that matters for this chunk,
+    // instead of re-evaluating the whole river's spline on every chunk it happens to pass through.
+    private static List<int[]> getOrComputeChunkPoints(River river,
+                                                       int chunkMinX, int chunkMinZ, int chunkMaxX, int chunkMaxZ, int influence) {
+        long cacheKey = chunkPointKey(river, chunkMinX >> 4, chunkMinZ >> 4);
+        List<int[]> cached = CHUNK_POINT_CACHE.get(cacheKey);
+        if (cached != null) return cached;
+
+        int searchRadius = influence + 32;
+        Map<Long, List<int[]>> index = getOrComputeSpatialIndex(river);
+
+        int minBX = Math.floorDiv(chunkMinX - searchRadius, SPATIAL_BUCKET_SIZE);
+        int maxBX = Math.floorDiv(chunkMaxX + searchRadius, SPATIAL_BUCKET_SIZE);
+        int minBZ = Math.floorDiv(chunkMinZ - searchRadius, SPATIAL_BUCKET_SIZE);
+        int maxBZ = Math.floorDiv(chunkMaxZ + searchRadius, SPATIAL_BUCKET_SIZE);
+
+        List<int[]> points = new ArrayList<>();
+        for (int bx = minBX; bx <= maxBX; bx++) {
+            for (int bz = minBZ; bz <= maxBZ; bz++) {
+                List<int[]> bucket = index.get(bucketKey(bx, bz));
+                if (bucket == null) continue;
+                for (int[] pt : bucket) {
+                    if (pt[0] >= chunkMinX - searchRadius && pt[0] <= chunkMaxX + searchRadius &&
+                            pt[1] >= chunkMinZ - searchRadius && pt[1] <= chunkMaxZ + searchRadius) {
+                        points.add(pt);
+                    }
+                }
+            }
+        }
+
+        CHUNK_POINT_CACHE.put(cacheKey, points);
+        return points;
+    }
+
+    private static long chunkPointKey(River river, int chunkX, int chunkZ) {
+        // combine river identity with chunk coords into a single long key
+        return ((long)(System.identityHashCode(river) & 0xFFFF) << 48)
+                | ((long)(chunkX & 0xFFFFFF) << 24)
+                | (chunkZ & 0xFFFFFF);
+    }
+
     public static double distanceToRiver(River river, double blockX, double blockZ) {
-        List<int[]> points = getOrComputeSplinePoints(river);
+        Map<Long, List<int[]>> index = getOrComputeSpatialIndex(river);
+        int bucketX = (int) Math.floor(blockX / SPATIAL_BUCKET_SIZE);
+        int bucketZ = (int) Math.floor(blockZ / SPATIAL_BUCKET_SIZE);
         double minDist = Double.MAX_VALUE;
-        for (int[] pt : points) {
-            double dx = blockX - pt[0];
-            double dz = blockZ - pt[1];
-            double dist = Math.sqrt(dx * dx + dz * dz);
-            if (dist < minDist) minDist = dist;
+        for (int bx = bucketX - 1; bx <= bucketX + 1; bx++) {
+            for (int bz = bucketZ - 1; bz <= bucketZ + 1; bz++) {
+                List<int[]> bucket = index.get(bucketKey(bx, bz));
+                if (bucket == null) continue;
+                for (int[] pt : bucket) {
+                    double dx = blockX - pt[0];
+                    double dz = blockZ - pt[1];
+                    double dist = Math.sqrt(dx * dx + dz * dz);
+                    if (dist < minDist) minDist = dist;
+                }
+            }
         }
         return minDist;
     }
 
+    private static long bucketKey(int bx, int bz) {
+        return ((long)(bx & 0xFFFFFFFFL) << 32) | (bz & 0xFFFFFFFFL);
+    }
+
+    private static synchronized Map<Long, List<int[]>> getOrComputeSpatialIndex(River river) {
+        if (SPATIAL_INDEX_CACHE.containsKey(river)) return SPATIAL_INDEX_CACHE.get(river);
+        List<int[]> points = getOrComputeSplinePoints(river);
+        Map<Long, List<int[]>> index = new HashMap<>(points.size() / 4 + 1);
+        for (int[] pt : points) {
+            int bx = Math.floorDiv(pt[0], SPATIAL_BUCKET_SIZE);
+            int bz = Math.floorDiv(pt[1], SPATIAL_BUCKET_SIZE);
+            index.computeIfAbsent(bucketKey(bx, bz), k -> new ArrayList<>()).add(pt);
+        }
+        SPATIAL_INDEX_CACHE.put(river, index);
+        return index;
+    }
+
+    // cheap per-river bounding-box reject, used by RiverNetwork before it bothers with the
+    // (still much cheaper than before, but non-zero) spatial-index lookup in distanceToRiver
+    public static boolean isNearRiver(River river, double blockX, double blockZ, double margin) {
+        int[] b = getOrComputeBounds(river, (int) Math.ceil(margin));
+        return blockX >= b[0] && blockX <= b[1] && blockZ >= b[2] && blockZ <= b[3];
+    }
+
+    private static int[] getOrComputeBounds(River river, int influence) {
+        if (BOUNDS_CACHE.containsKey(river)) {
+            int[] b = BOUNDS_CACHE.get(river);
+            return new int[]{b[0] - influence, b[1] + influence, b[2] - influence, b[3] + influence};
+        }
+        List<int[]> points = getOrComputeSplinePoints(river);
+        int minX = Integer.MAX_VALUE, maxX = Integer.MIN_VALUE;
+        int minZ = Integer.MAX_VALUE, maxZ = Integer.MIN_VALUE;
+        Waypoint firstWp = river.waypoints().get(0);
+        minX = Math.min(minX, (int) firstWp.x()); maxX = Math.max(maxX, (int) firstWp.x());
+        minZ = Math.min(minZ, (int) firstWp.z()); maxZ = Math.max(maxZ, (int) firstWp.z());
+        for (int[] pt : points) {
+            if (pt[0] < minX) minX = pt[0]; if (pt[0] > maxX) maxX = pt[0];
+            if (pt[1] < minZ) minZ = pt[1]; if (pt[1] > maxZ) maxZ = pt[1];
+        }
+        BOUNDS_CACHE.put(river, new int[]{minX, maxX, minZ, maxZ});
+        return new int[]{minX - influence, maxX + influence, minZ - influence, maxZ + influence};
+    }
+
     public static void clearCaches() {
+        CHUNK_POINT_CACHE.clear();
         RIVER_POINT_CACHE.clear();
+        SPATIAL_INDEX_CACHE.clear();
+        BOUNDS_CACHE.clear();
         FORD_SEGMENT_CACHE.clear();
+        RiverNetwork.clearBoundsCache();
     }
 
     private static List<int[]> getOrComputeSplinePoints(River river) {
@@ -139,7 +265,9 @@ public class RiverGenerator {
             if (!isEndpoint) {
                 // fade meander in over the first 15% so the start connects cleanly
                 // use smoothstep so the transition is gradual rather than linear
-                double rawFade = Math.min(1.0, t / 0.15);
+                double fadeIn = Math.min(1.0, t / 0.15);
+                double fadeOut = river.connectsTo().isEmpty() ? 1.0 : Math.min(1.0, (1.0 - t) / 0.15);
+                double rawFade = Math.min(fadeIn, fadeOut);
                 double meanderFade = rawFade * rawFade * (3 - 2 * rawFade);
 
                 if (meanderStrength > 0) {

@@ -1,5 +1,7 @@
 package dev.tocraft.ctgen.rivers;
 
+import dev.tocraft.ctgen.roads.Waypoint;
+
 import java.util.List;
 import java.util.Map;
 
@@ -7,74 +9,55 @@ public record RiverNetwork(
         List<River> rivers,
         Map<String, River> riversByName
 ) {
-    /**
-     * Returns the terrain height modifier for a block position.
-     * Returns empty if not near any river.
-     * If near a river, returns the Y level the terrain should be carved to.
-     */
-    public java.util.OptionalDouble getRiverDepthAt(double blockX, double blockZ, int seaLevel) {
-        double bestCarveY = Double.MAX_VALUE;
-        boolean nearRiver = false;
+    private static volatile int[] GLOBAL_BOUNDS = null;
 
-        for (River river : rivers) {
-            double dist = river.distanceTo(blockX, blockZ);
-            double halfWidth = river.type().width() / 2.0;
-            double transitionWidth = halfWidth * 3.0;
-
-            if (dist < transitionWidth) {
-                nearRiver = true;
-
-                if (dist < halfWidth) {
-                    // inside river — full U-shape depth
-                    double normalizedDist = dist / halfWidth;
-                    // U-shape: depth is max at center, 0 at edge
-                    double depthFraction = 1.0 - (normalizedDist * normalizedDist);
-                    double carveY = seaLevel - (river.type().depth() * depthFraction);
-                    bestCarveY = Math.min(bestCarveY, carveY);
-                } else {
-                    // transition zone — smoothstep blend from river edge to terrain
-                    double transitionT = (dist - halfWidth) / (transitionWidth - halfWidth);
-                    double smoothT = smoothStep(transitionT);
-                    // at dist=halfWidth: smoothT=0 → river depth
-                    // at dist=transitionWidth: smoothT=1 → terrain level (no carve)
-                    // we just carve shallower the further we are
-                    double depthFraction = (1.0 - smoothT) * 0.0; // edge depth = 0
-                    double carveY = seaLevel - (river.type().depth() * depthFraction);
-                    // only carve if we're adding actual depth
-                    if (carveY < seaLevel) {
-                        bestCarveY = Math.min(bestCarveY, carveY);
-                    }
-                }
-            }
-        }
-
-        return nearRiver && bestCarveY < Double.MAX_VALUE
-                ? java.util.OptionalDouble.of(bestCarveY)
-                : java.util.OptionalDouble.empty();
+    public boolean isInRiverInfluenceZone(double blockX, double blockZ) {
+        if (rivers.isEmpty()) return false;
+        int[] bounds = getOrComputeGlobalBounds();
+        return blockX >= bounds[0] && blockX <= bounds[1]
+                && blockZ >= bounds[2] && blockZ <= bounds[3];
     }
 
-    /**
-     * Returns the height modifier for terrain near a river.
-     * This is used to blend terrain smoothly into the river.
-     * Returns the amount to subtract from terrain height, or 0 if not near a river.
-     */
+    private int[] getOrComputeGlobalBounds() {
+        if (GLOBAL_BOUNDS != null) return GLOBAL_BOUNDS;
+        int minX = Integer.MAX_VALUE, maxX = Integer.MIN_VALUE;
+        int minZ = Integer.MAX_VALUE, maxZ = Integer.MIN_VALUE;
+        for (River river : rivers) {
+            int influence = (int)(river.type().width() * river.type().transitionMultiplier() * 1.25) + 50;
+            for (Waypoint wp : river.waypoints()) {
+                minX = Math.min(minX, (int) wp.x() - influence);
+                maxX = Math.max(maxX, (int) wp.x() + influence);
+                minZ = Math.min(minZ, (int) wp.z() - influence);
+                maxZ = Math.max(maxZ, (int) wp.z() + influence);
+            }
+        }
+        GLOBAL_BOUNDS = new int[]{minX, maxX, minZ, maxZ};
+        return GLOBAL_BOUNDS;
+    }
+
+    public static void clearBoundsCache() {
+        GLOBAL_BOUNDS = null;
+    }
+
     public double getTerrainModifierAt(double blockX, double blockZ, int seaLevel) {
         double maxModifier = 0;
 
         for (River river : rivers) {
-            double dist = river.distanceTo(blockX, blockZ);
             double halfWidth = river.type().width() / 2.0;
             double transitionWidth = halfWidth * 3.0;
 
+            // cheap per-river bounding-box reject before touching the (still non-trivial)
+            // spatial-index lookup — skips rivers that can't possibly matter here at all
+            if (!RiverGenerator.isNearRiver(river, blockX, blockZ, transitionWidth)) continue;
+
+            double dist = RiverGenerator.distanceToRiver(river, blockX, blockZ);
             if (dist >= transitionWidth) continue;
 
             if (dist < halfWidth) {
-                // inside river — full depth carve
                 double normalizedDist = dist / halfWidth;
                 double depthFraction = 1.0 - (normalizedDist * normalizedDist);
                 maxModifier = Math.max(maxModifier, river.type().depth() * depthFraction);
             } else {
-                // transition zone
                 double transitionT = (dist - halfWidth) / (transitionWidth - halfWidth);
                 double smoothT = smoothStep(transitionT);
                 double depthFraction = 1.0 - smoothT;
@@ -85,14 +68,12 @@ public record RiverNetwork(
         return maxModifier;
     }
 
-    /**
-     * Returns true if this position is close enough to a river to be visible as a map dot.
-     */
     public boolean isVisibleRiverAt(double blockX, double blockZ) {
         for (River river : rivers) {
             if (!river.type().visibleOnMap()) continue;
-            double dist = river.distanceTo(blockX, blockZ);
-            if (dist < river.type().width() / 2.0) return true;
+            double halfWidth = river.type().width() / 2.0;
+            if (!RiverGenerator.isNearRiver(river, blockX, blockZ, halfWidth)) continue;
+            if (RiverGenerator.distanceToRiver(river, blockX, blockZ) < halfWidth) return true;
         }
         return false;
     }

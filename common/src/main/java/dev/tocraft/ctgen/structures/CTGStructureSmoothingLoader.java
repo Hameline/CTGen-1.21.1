@@ -24,11 +24,22 @@ public class CTGStructureSmoothingLoader extends SimplePreparableReloadListener<
 
     private static final Gson GSON = new Gson();
     private static final String DIRECTORY = "ctgen_structure_smoothing";
-    public record CTGJigsawSmoothingConfig(int transitionWidth, int yOffset) {}
 
     public static final Codec<CTGJigsawSmoothing.CTGJigsawSmoothingConfig> CONFIG_CODEC = RecordCodecBuilder.create(instance -> instance.group(
             Codec.INT.optionalFieldOf("transition_width", 6).forGetter(CTGJigsawSmoothing.CTGJigsawSmoothingConfig::transitionWidth),
-            Codec.INT.optionalFieldOf("y_offset", 0).forGetter(CTGJigsawSmoothing.CTGJigsawSmoothingConfig::yOffset)
+            Codec.INT.optionalFieldOf("y_offset", 0).forGetter(CTGJigsawSmoothing.CTGJigsawSmoothingConfig::yOffset),
+            // upper bound on how far transition_width is allowed to widen when a structure
+            // lands far from the natural terrain around it (see "slope" below)
+            Codec.INT.optionalFieldOf("max_transition_width", 48).forGetter(CTGJigsawSmoothing.CTGJigsawSmoothingConfig::maxTransitionWidth),
+            // horizontal blocks of blend radius per 1 block of height mismatch between the
+            // structure and its surroundings — transition_width is used as-is until the
+            // measured mismatch needs more room than that to keep this slope; e.g. 2.0 means
+            // a 20-block mismatch blends over 40 blocks instead of squeezing into transition_width
+            Codec.DOUBLE.optionalFieldOf("slope", 2.0).forGetter(CTGJigsawSmoothing.CTGJigsawSmoothingConfig::slope),
+            // how far below the structure's ground level the solid fill is allowed to reach
+            // looking for real terrain, so a structure spawning over a cliff/ravine gets a
+            // deep-but-bounded foundation instead of an unbounded pillar straight to bedrock
+            Codec.INT.optionalFieldOf("max_foundation_depth", 32).forGetter(CTGJigsawSmoothing.CTGJigsawSmoothingConfig::maxFoundationDepth)
     ).apply(instance, instance.stable(CTGJigsawSmoothing.CTGJigsawSmoothingConfig::new)));
 
     @Override
@@ -67,6 +78,9 @@ public class CTGStructureSmoothingLoader extends SimplePreparableReloadListener<
             @NotNull ProfilerFiller profiler
     ) {
         CTGJigsawSmoothing.setConfigs(configs);
+        // cached placements carry a transition width baked in under the old config —
+        // drop them so any already-generated-adjacent chunk recomputes it on next touch
+        CTGJigsawSmoothing.clearStructureBoxCache();
     }
 
     @Override

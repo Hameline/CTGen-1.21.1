@@ -214,10 +214,11 @@ public final class MapSettings {
         // apply jaggedness on top of cliff-snapped terrain
         baseHeight = applyCliffJaggedness(baseHeight, pX, pY);
 
-        // apply river carving
+        // apply river carving — skip entirely if outside river influence bounds
         int blockX = pX * 4;
         int blockZ = pY * 4;
         double riverModifier = RiverNetworkLoader.getNetwork()
+                .filter(network -> network.isInRiverInfluenceZone(blockX, blockZ))
                 .map(network -> network.getTerrainModifierAt(blockX, blockZ, 63))
                 .orElse(0.0);
 

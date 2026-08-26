@@ -1,7 +1,5 @@
 package dev.tocraft.ctgen.mixin;
 
-import dev.tocraft.ctgen.rivers.RiverNetwork;
-import dev.tocraft.ctgen.rivers.RiverNetworkLoader;
 import dev.tocraft.ctgen.walls.WallNetwork;
 import dev.tocraft.ctgen.walls.WallNetworkLoader;
 import dev.tocraft.ctgen.walls.WallType;
@@ -28,8 +26,6 @@ import java.util.function.Function;
 
 @Mixin(WorldCarver.class)
 public class WorldCarverMixin<C extends CarverConfiguration> {
-
-    private static final int RIVER_CAVE_PROTECTION_RADIUS = 8;
 
     @Inject(
             method = "carveBlock",
@@ -60,33 +56,12 @@ public class WorldCarverMixin<C extends CarverConfiguration> {
             return;
         }
 
-        // prevent carving within river protection radius
-        RiverNetworkLoader.getNetwork().ifPresent(network -> {
-            if (isNearRiver(network, pos.getX(), pos.getY(), pos.getZ())) {
-                cir.setReturnValue(false);
-            }
-        });
-
-        if (cir.isCancelled()) return;
-
         // prevent carving inside or under wall zones
         WallNetworkLoader.getNetwork().ifPresent(network -> {
             if (isNearWall(network, pos.getX(), pos.getZ())) {
                 cir.setReturnValue(false);
             }
         });
-    }
-
-    private static boolean isNearRiver(@NotNull RiverNetwork network, int blockX, int blockY, int blockZ) {
-        for (var river : network.rivers()) {
-            double halfWidth = river.type().width() / 2.0;
-            double protectionRadius = halfWidth
-                    + (halfWidth * river.type().transitionMultiplier())
-                    + RIVER_CAVE_PROTECTION_RADIUS;
-            double dist = dev.tocraft.ctgen.rivers.RiverGenerator.distanceToRiver(river, blockX, blockZ);
-            if (dist < protectionRadius) return true;
-        }
-        return false;
     }
 
     private static boolean isNearWall(@NotNull WallNetwork network, int blockX, int blockZ) {

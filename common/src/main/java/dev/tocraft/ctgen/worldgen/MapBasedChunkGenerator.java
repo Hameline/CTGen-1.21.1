@@ -134,8 +134,11 @@ public class MapBasedChunkGenerator extends ChunkGenerator {
         RiverNetworkLoader.getNetwork().ifPresent(network -> RiverGenerator.generateRivers(chunk, network));
         WallNetworkLoader.getNetwork().ifPresent(network -> WallGenerator.generateWalls(chunk, network));
 
-        // structure smoothing
-        CTGJigsawSmoothing.smoothChunkAroundStructures(chunk, structures);
+        // structure smoothing — pass the CTGen density-level height so it can measure a
+        // structure's whole footprint (which may span many chunks) up front, regardless of
+        // which chunk happens to generate first
+        CTGJigsawSmoothing.smoothChunkAroundStructures(chunk, structures,
+                (x, z) -> getSettings().getHeight(noise, x, z));
 
         // cave entrances — carved last, cuts through everything including mountain features
         applyCaveEntrances(chunk, chunk.getPos());

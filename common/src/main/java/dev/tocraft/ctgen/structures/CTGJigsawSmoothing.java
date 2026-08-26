@@ -27,12 +27,33 @@ public class CTGJigsawSmoothing {
     private static final Map<Structure, ResourceLocation> STRUCTURE_ID_LOOKUP = new HashMap<>();
     private static final Map<ResourceLocation, Structure> STRUCTURE_ID_REVERSE_LOOKUP = new HashMap<>();
 
-    public record StructurePlacement(BoundingBox boundingBox, int startPieceY) {}
+    /**
+     * Reads the CTGen density-level surface height (image + cliffs + jaggedness + rivers,
+     * i.e. everything {@code MapSettings.getHeight} bakes in) at a world column. Passed in
+     * rather than called directly so this package doesn't depend on worldgen.
+     * <p>
+     * Unlike scanning actually-placed blocks, this is available for ANY column regardless of
+     * whether that column's chunk has been generated yet — which is what lets us measure a
+     * structure's whole footprint (it may span many chunks) the first time we see it, instead
+     * of only the sliver of it that happens to lie in whichever chunk generates first.
+     */
+    @FunctionalInterface
+    public interface HeightLookup {
+        double heightAt(int worldX, int worldZ);
+    }
+
+    public record StructurePlacement(BoundingBox boundingBox, int startPieceY, int transitionWidth) {}
 
     private static final Map<ResourceLocation, List<StructurePlacement>> PLACED_STRUCTURE_BOXES = new ConcurrentHashMap<>();
     private static final Set<Long> SMOOTHED_CHUNKS = Collections.newSetFromMap(new ConcurrentHashMap<>());
 
-    public record CTGJigsawSmoothingConfig(int transitionWidth, int yOffset) {}
+    public record CTGJigsawSmoothingConfig(
+            int transitionWidth,
+            int yOffset,
+            int maxTransitionWidth,
+            double slope,
+            int maxFoundationDepth
+    ) {}
 
     public static void setConfigs(Map<ResourceLocation, CTGJigsawSmoothingConfig> configs) {
         CONFIGS = configs;
@@ -64,7 +85,8 @@ public class CTGJigsawSmoothing {
 
     public static void smoothChunkAroundStructures(
             @NotNull ChunkAccess chunk,
-            @NotNull StructureManager structureManager
+            @NotNull StructureManager structureManager,
+            @NotNull HeightLookup heightLookup
     ) {
         if (CONFIGS.isEmpty()) return;
 
@@ -88,6 +110,8 @@ public class CTGJigsawSmoothing {
                 Structure structure = start.getStructure();
                 ResourceLocation id = STRUCTURE_ID_LOOKUP.get(structure);
                 if (id == null) continue;
+                CTGJigsawSmoothingConfig config = CONFIGS.get(id);
+                if (config == null) continue;
                 BoundingBox box = start.getBoundingBox();
 
                 // use start piece Y as reference — more accurate than overall bounding box minY
@@ -97,9 +121,14 @@ public class CTGJigsawSmoothing {
                     startPieceY = start.getPieces().get(0).getBoundingBox().minY();
                 }
 
+                // measure how badly this specific instance mismatches the natural terrain around
+                // its WHOLE footprint (it may span many chunks) and size the blend radius to that,
+                // instead of using one fixed radius for every spawn of this structure everywhere
+                int transitionWidth = computeAdaptiveTransitionWidth(box, startPieceY, config, heightLookup);
+
                 List<StructurePlacement> placements = PLACED_STRUCTURE_BOXES
                         .computeIfAbsent(id, k -> new CopyOnWriteArrayList<>());
-                StructurePlacement placement = new StructurePlacement(box, startPieceY);
+                StructurePlacement placement = new StructurePlacement(box, startPieceY, transitionWidth);
                 if (!placements.contains(placement)) {
                     placements.add(placement);
                 }
@@ -115,10 +144,9 @@ public class CTGJigsawSmoothing {
             List<StructurePlacement> placements = PLACED_STRUCTURE_BOXES.get(id);
             if (placements == null) continue;
 
-            int transitionWidth = config.transitionWidth();
-
             for (StructurePlacement placement : placements) {
                 BoundingBox box = placement.boundingBox();
+                int transitionWidth = placement.transitionWidth();
                 int expandedMinX = box.minX() - transitionWidth;
                 int expandedMaxX = box.maxX() + transitionWidth;
                 int expandedMinZ = box.minZ() - transitionWidth;
@@ -127,19 +155,58 @@ public class CTGJigsawSmoothing {
                 if (chunkMaxX < expandedMinX || chunkMinX > expandedMaxX ||
                         chunkMaxZ < expandedMinZ || chunkMinZ > expandedMaxZ) continue;
 
-                smoothAroundStructure(chunk, box, placement.startPieceY(), config);
+                smoothAroundStructure(chunk, box, placement.startPieceY(), transitionWidth, config);
             }
         }
+    }
+
+    // samples the CTGen density-level height around a structure's whole footprint perimeter
+    // (corners + edge points, spaced no more than ~16 blocks apart) to find the worst-case
+    // mismatch between where the structure landed and the natural terrain around it, then
+    // sizes the blend radius so the resulting slope stays roughly constant regardless of how
+    // big that mismatch is — a small mismatch keeps the configured minimum radius, a big one
+    // (e.g. spawning right at the edge of a mountain zone) gets a proportionally wider, gentler
+    // blend instead of the same fixed radius every instance of this structure gets everywhere
+    private static int computeAdaptiveTransitionWidth(
+            @NotNull BoundingBox box,
+            int startPieceY,
+            @NotNull CTGJigsawSmoothingConfig config,
+            @NotNull HeightLookup heightLookup
+    ) {
+        int placeY = startPieceY - config.yOffset();
+
+        int minX = box.minX(), maxX = box.maxX();
+        int minZ = box.minZ(), maxZ = box.maxZ();
+
+        int stepX = Math.min(16, Math.max(1, (maxX - minX) / 8));
+        int stepZ = Math.min(16, Math.max(1, (maxZ - minZ) / 8));
+
+        double maxAbsDelta = 0;
+        for (int x = minX; x <= maxX; x += stepX) {
+            maxAbsDelta = Math.max(maxAbsDelta, Math.abs(heightLookup.heightAt(x, minZ) - placeY));
+            maxAbsDelta = Math.max(maxAbsDelta, Math.abs(heightLookup.heightAt(x, maxZ) - placeY));
+        }
+        for (int z = minZ; z <= maxZ; z += stepZ) {
+            maxAbsDelta = Math.max(maxAbsDelta, Math.abs(heightLookup.heightAt(minX, z) - placeY));
+            maxAbsDelta = Math.max(maxAbsDelta, Math.abs(heightLookup.heightAt(maxX, z) - placeY));
+        }
+        // always include the exact corners even if the step size skipped over them
+        maxAbsDelta = Math.max(maxAbsDelta, Math.abs(heightLookup.heightAt(minX, minZ) - placeY));
+        maxAbsDelta = Math.max(maxAbsDelta, Math.abs(heightLookup.heightAt(maxX, minZ) - placeY));
+        maxAbsDelta = Math.max(maxAbsDelta, Math.abs(heightLookup.heightAt(minX, maxZ) - placeY));
+        maxAbsDelta = Math.max(maxAbsDelta, Math.abs(heightLookup.heightAt(maxX, maxZ) - placeY));
+
+        int neededWidth = (int) Math.ceil(maxAbsDelta * config.slope());
+        return Math.max(config.transitionWidth(), Math.min(neededWidth, config.maxTransitionWidth()));
     }
 
     public static void smoothAroundStructure(
             @NotNull ChunkAccess chunk,
             @NotNull BoundingBox structureBox,
             int startPieceY,
+            int transitionWidth,
             @NotNull CTGJigsawSmoothingConfig config
     ) {
-        int transitionWidth = config.transitionWidth();
-
         int chunkMinX = chunk.getPos().getMinBlockX();
         int chunkMinZ = chunk.getPos().getMinBlockZ();
         int chunkMaxX = chunkMinX + 15;
@@ -165,8 +232,11 @@ public class CTGJigsawSmoothing {
                 int localZ = z - chunkMinZ;
                 int naturalY = getNaturalHeight(chunk, localX, localZ);
 
-                // fill downward — no floating structures
-                int fillBottom = Math.max(placeY - 15, chunk.getMinBuildHeight());
+                // fill downward all the way to the real ground if it's lower than the structure
+                // — no floating structures over a gap — bounded only by max_foundation_depth as
+                // a sanity cap for pathological terrain (e.g. spawning right over a ravine)
+                int fillBottom = Math.max(chunk.getMinBuildHeight(),
+                        Math.max(naturalY, placeY - config.maxFoundationDepth()));
                 for (int y = placeY - 1; y >= fillBottom; y--) {
                     pos.set(x, y, z);
                     BlockState state = chunk.getBlockState(pos);
