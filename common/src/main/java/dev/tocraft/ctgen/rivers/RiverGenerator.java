@@ -25,6 +25,13 @@ public class RiverGenerator {
     private static final int MAX_CACHE_SIZE = 500;
     private static final int SPATIAL_BUCKET_SIZE = 256;
 
+    // fine-grained grid used only within a single generateRiver() call — nearbyPoints is
+    // already narrowed down per-chunk, but every column in the chunk was still scanning that
+    // whole list to find its nearest point (O(256 * nearbyPoints.size()) per chunk-river).
+    // Bucketing nearbyPoints into small cells first lets each column check only its own
+    // neighborhood instead of every point gathered for the whole chunk + margin.
+    private static final double LOCAL_GRID_CELL_SIZE = 24.0;
+
     // per-chunk spline point cache keyed by (river hashCode << 32 | chunkKey)
     // avoids computing the full river spline on first load — only computes what each chunk needs
     private static final Map<Long, List<int[]>> CHUNK_POINT_CACHE = new java.util.LinkedHashMap<>(512, 0.75f, true) {
@@ -74,6 +81,14 @@ public class RiverGenerator {
     private static final SimplexNoise DEPTH_NOISE = new SimplexNoise(new LegacyRandomSource(0x12345678L));
     private static final SimplexNoise BED_NOISE = new SimplexNoise(new LegacyRandomSource(0xFEDCBA98L));
 
+    // bank roughness — same idea as the cave-tunnel wall noise: perturb the implicit
+    // distance-to-spline value itself (before any threshold check) instead of just varying
+    // the width/depth along the river. That makes the water's edge, the transition band and
+    // the underwater slope all wobble together instead of tracing a perfect offset curve.
+    private static final SimplexNoise BANK_NOISE = new SimplexNoise(new LegacyRandomSource(0x900D0BAAL));
+    private static final double BANK_NOISE_FREQUENCY = 0.03;
+    private static final double BANK_NOISE_FINE_FREQUENCY = BANK_NOISE_FREQUENCY * 2.7;
+
     private static final double WIDTH_FREQUENCY = 0.001;
     private static final double DEPTH_FREQUENCY = 0.002;
     private static final double BED_FREQUENCY = 0.02;
@@ -87,7 +102,18 @@ public class RiverGenerator {
         for (River river : network.rivers()) {
             if (river.waypoints().size() < 2) continue;
 
-            int influence = (int)(river.type().width() * river.type().transitionMultiplier() * 1.25) + 50;
+            // outer edge of the transition band, from the centerline, is halfWidth + width*transitionMultiplier;
+            // padded for width/bank-roughness noise. Must scale with width even at small (or zero)
+            // transitionMultiplier, since that alone still needs to clear the river's own half-width.
+            int influence = (int) Math.ceil(river.type().width() * (0.5 + river.type().transitionMultiplier()) * 1.15) + 20;
+
+            // isChunkNearWaypoints below measures distance from the RAW (unmeandered) waypoint
+            // segments, but the actual spline can wander up to ~amplitude sideways from that line.
+            // Without padding for that, a wide/high-meanderStrength river could swing outside
+            // `influence` at its bend peaks and have those chunks wrongly culled — i.e. gaps in
+            // the river right where it curves hardest. Mirrors the amplitude formula below.
+            int meanderMargin = (int) Math.ceil(river.type().width() * (2.0 + river.type().meanderStrength() * 8.0)) + 15;
+            influence += meanderMargin;
 
             // fast waypoint-based bounding box reject — uses raw waypoints, no spline needed
             if (!isChunkNearWaypoints(river, chunkMinX, chunkMinZ, chunkMaxX, chunkMaxZ, influence)) continue;
@@ -189,6 +215,44 @@ public class RiverGenerator {
         return ((long)(bx & 0xFFFFFFFFL) << 32) | (bz & 0xFFFFFFFFL);
     }
 
+    // rebuilt fresh per generateRiver() call from the already-small nearbyPoints list — cheap
+    // (single pass) and turns the per-column nearest-point search from O(N) into O(a handful).
+    private static Map<Long, List<int[]>> buildLocalPointGrid(List<int[]> points) {
+        Map<Long, List<int[]>> grid = new HashMap<>(points.size() / 3 + 1);
+        for (int[] pt : points) {
+            grid.computeIfAbsent(localCellKey(pt[0], pt[1]), k -> new ArrayList<>(4)).add(pt);
+        }
+        return grid;
+    }
+
+    private static long localCellKey(int worldX, int worldZ) {
+        int cx = (int) Math.floor(worldX / LOCAL_GRID_CELL_SIZE);
+        int cz = (int) Math.floor(worldZ / LOCAL_GRID_CELL_SIZE);
+        return ((long)(cx & 0xFFFFFFFFL) << 32) | (cz & 0xFFFFFFFFL);
+    }
+
+    // squared distance to the nearest point within cellRadius cells of (x, z) — Double.MAX_VALUE
+    // if the grid has nothing that close. Squared so callers can reject far columns with one
+    // comparison instead of paying for a sqrt on every candidate point.
+    private static double nearestPointDistSq(Map<Long, List<int[]>> grid, int x, int z, int cellRadius) {
+        int cx = (int) Math.floor(x / LOCAL_GRID_CELL_SIZE);
+        int cz = (int) Math.floor(z / LOCAL_GRID_CELL_SIZE);
+        double minDistSq = Double.MAX_VALUE;
+        for (int dcx = -cellRadius; dcx <= cellRadius; dcx++) {
+            for (int dcz = -cellRadius; dcz <= cellRadius; dcz++) {
+                List<int[]> bucket = grid.get(((long)((cx + dcx) & 0xFFFFFFFFL) << 32) | ((cz + dcz) & 0xFFFFFFFFL));
+                if (bucket == null) continue;
+                for (int[] pt : bucket) {
+                    double dx = x - pt[0];
+                    double dz = z - pt[1];
+                    double distSq = dx * dx + dz * dz;
+                    if (distSq < minDistSq) minDistSq = distSq;
+                }
+            }
+        }
+        return minDistSq;
+    }
+
     private static synchronized Map<Long, List<int[]>> getOrComputeSpatialIndex(River river) {
         if (SPATIAL_INDEX_CACHE.containsKey(river)) return SPATIAL_INDEX_CACHE.get(river);
         List<int[]> points = getOrComputeSplinePoints(river);
@@ -279,7 +343,14 @@ public class RiverGenerator {
                     if (len > 0) {
                         double perpX = -dirZ / len;
                         double perpZ = dirX / len;
-                        double frequency = 0.0005 + meanderStrength * 0.003;
+                        // amplitude scales with width (below), so the wavelength must too, or wide
+                        // rivers get the same-size bend crammed into the same along-path distance as
+                        // a narrow one — i.e. a proportionally much sharper turn. Scaling frequency
+                        // down (wavelength up) by width/referenceWidth keeps amplitude:wavelength,
+                        // and so the bend's sharpness, roughly constant across river sizes.
+                        double referenceWidth = 8.0;
+                        double widthScale = referenceWidth / Math.max(1.0, river.type().width());
+                        double frequency = (0.0005 + meanderStrength * 0.003) * widthScale;
                         double amplitude = river.type().width() * (2.0 + meanderStrength * 8.0);
                         double pathDist = t * totalDist;
                         double displacement = MEANDER_NOISE_X.getValue(pathDist * frequency, 0) * amplitude * meanderFade;
@@ -369,26 +440,37 @@ public class RiverGenerator {
         return fordSegments;
     }
 
-    private static double distToSegment(double px, double pz, double ax, double az, double bx, double bz) {
+    // squared point-to-segment distance — callers doing a nearest-of-many-segments search
+    // compare this directly and only sqrt the winning minimum once.
+    private static double distToSegmentSq(double px, double pz, double ax, double az, double bx, double bz) {
         double dx = bx - ax;
         double dz = bz - az;
         double lenSq = dx * dx + dz * dz;
         if (lenSq == 0) {
             double ex = px - ax;
             double ez = pz - az;
-            return Math.sqrt(ex * ex + ez * ez);
+            return ex * ex + ez * ez;
         }
         double t = Math.max(0, Math.min(1, ((px - ax) * dx + (pz - az) * dz) / lenSq));
         double projX = ax + t * dx;
         double projZ = az + t * dz;
         double fx = px - projX;
         double fz = pz - projZ;
-        return Math.sqrt(fx * fx + fz * fz);
+        return fx * fx + fz * fz;
     }
 
     private static double getWidthMultiplier(double x, double z) {
         double noise = WIDTH_NOISE.getValue(x * WIDTH_FREQUENCY, z * WIDTH_FREQUENCY);
         return 1.0 + noise * 0.10;
+    }
+
+    // two octaves, same trick as the cave tunnel's summed sine wallNoise — a coarse wobble
+    // plus a finer one layered on top so the bank reads as rough rather than merely offset.
+    // Returned in roughly [-1, 1]; callers scale it by how much wobble they want.
+    private static double getBankRoughness(double x, double z) {
+        double coarse = BANK_NOISE.getValue(x * BANK_NOISE_FREQUENCY, z * BANK_NOISE_FREQUENCY);
+        double fine = BANK_NOISE.getValue(x * BANK_NOISE_FINE_FREQUENCY + 500, z * BANK_NOISE_FINE_FREQUENCY + 500);
+        return coarse * 0.7 + fine * 0.3;
     }
 
     private static double getDepthVariation(double x, double z) {
@@ -428,24 +510,41 @@ public class RiverGenerator {
         int[][] naturalHeightCache = new int[16][16];
         boolean[][] naturalHeightComputed = new boolean[16][16];
 
+        // bucket nearbyPoints once for this chunk-river pair, then only look at points beyond
+        // this radius from a column can't possibly matter (transition band is capped well below
+        // it), so a column whose grid search comes back empty is skipped outright.
+        // Outer edge of the transition band sits at halfWidth + (2*halfWidth)*transitionMultiplier
+        // blocks from the centerline; padded generously for the width/bank-roughness noise on top.
+        Map<Long, List<int[]>> localGrid = buildLocalPointGrid(nearbyPoints);
+        double maxSearchDist = baseHalfWidth * (1.0 + 2.0 * transitionMultiplier) * 1.2 + 8;
+        double maxSearchDistSq = maxSearchDist * maxSearchDist;
+        int cellRadius = (int) Math.ceil(maxSearchDist / LOCAL_GRID_CELL_SIZE) + 1;
+
         for (int x = chunkMinX; x <= chunkMaxX; x++) {
             for (int z = chunkMinZ; z <= chunkMaxZ; z++) {
                 int localX = x - chunkMinX;
                 int localZ = z - chunkMinZ;
 
-                double minDist = Double.MAX_VALUE;
-                for (int[] pt : nearbyPoints) {
-                    double dx = x - pt[0];
-                    double dz = z - pt[1];
-                    double d = Math.sqrt(dx * dx + dz * dz);
-                    if (d < minDist) minDist = d;
-                }
+                double minDistSq = nearestPointDistSq(localGrid, x, z, cellRadius);
+                if (minDistSq >= maxSearchDistSq) continue;
+                double minDist = Math.sqrt(minDistSq);
 
                 double widthMult = getWidthMultiplier(x, z);
                 double halfWidth = baseHalfWidth * widthMult;
-                double transitionWidth = halfWidth * transitionMultiplier;
+                // transition band is a multiple of the river's own (full) width, measured
+                // outward from the bank — e.g. transitionMultiplier 2.0 means the fade zone
+                // beyond each bank is twice as wide as the river itself.
+                double transitionBandWidth = (halfWidth * 2.0) * transitionMultiplier;
+                double transitionOuter = halfWidth + transitionBandWidth;
 
-                if (minDist >= transitionWidth) continue;
+                // perturb the distance itself (not just the width) so the bank is a rough,
+                // organic line instead of a perfect curve parallel to the spline — the same
+                // technique the cave tunnels use for their walls. Scaled to this river's own
+                // width so a narrow stream doesn't get torn apart by a wide river's wobble.
+                double bankAmplitude = halfWidth * 0.11;
+                double perturbedDist = Math.max(0.0, minDist + getBankRoughness(x, z) * bankAmplitude);
+
+                if (perturbedDist >= transitionOuter) continue;
 
                 if (!naturalHeightComputed[localX][localZ]) {
                     naturalHeightCache[localX][localZ] = getNaturalHeight(chunk, localX, localZ);
@@ -453,8 +552,8 @@ public class RiverGenerator {
                 }
                 int naturalY = naturalHeightCache[localX][localZ];
 
-                if (minDist <= halfWidth) {
-                    double normalizedDist = minDist / halfWidth;
+                if (perturbedDist <= halfWidth) {
+                    double normalizedDist = perturbedDist / halfWidth;
                     double depthFraction = (1.0 - (normalizedDist * normalizedDist)) * getDepthVariation(x, z);
                     int targetY = (int) Math.floor(seaLevel - maxDepth * depthFraction);
                     targetY = Math.max(targetY, chunk.getMinBuildHeight() + 1);
@@ -467,31 +566,34 @@ public class RiverGenerator {
                         }
                     }
 
-                    if (!bedBlocks.isEmpty()) {
-                        Block bedBlock = getBedBlock(x, z, bedBlocks);
-                        pos.set(x, targetY, z);
-                        BlockState atTarget = chunk.getBlockState(pos);
-                        if (!atTarget.isAir() && !atTarget.is(Blocks.WATER)) {
-                            chunk.setBlockState(pos, bedBlock.defaultBlockState(), false);
-                        }
+                    // Always place a bed block at the floor, even if it's already air here —
+                    // caves are carved before rivers (see applyCarvers vs. buildSurface), so a
+                    // cave can hollow out exactly this spot and leave the riverbed with a hole
+                    // straight into it if we only patch non-air floors. GRAVEL is the same
+                    // fallback getBedBlock() and the ford code already use for an empty list.
+                    Block bedBlock = bedBlocks.isEmpty() ? Blocks.GRAVEL : getBedBlock(x, z, bedBlocks);
+                    pos.set(x, targetY, z);
+                    BlockState atTarget = chunk.getBlockState(pos);
+                    if (!atTarget.is(Blocks.WATER)) {
+                        chunk.setBlockState(pos, bedBlock.defaultBlockState(), false);
                     }
 
-                    double minFordDist = Double.MAX_VALUE;
+                    double minFordDistSq = Double.MAX_VALUE;
                     for (double[] seg : fordSegments) {
-                        double d = distToSegment(x, z, seg[0], seg[1], seg[2], seg[3]);
-                        if (d < minFordDist) minFordDist = d;
+                        double d = distToSegmentSq(x, z, seg[0], seg[1], seg[2], seg[3]);
+                        if (d < minFordDistSq) minFordDistSq = d;
                     }
 
-                    boolean isFord = minFordDist < fordCorridorWidth;
+                    boolean isFord = minFordDistSq < fordCorridorWidth * fordCorridorWidth;
 
                     if (isFord) {
-                        double fordT = minFordDist / fordCorridorWidth;
+                        double fordT = Math.sqrt(minFordDistSq) / fordCorridorWidth;
                         double fordInfluence = 1.0 - smoothStep(fordT);
                         int fordTopY = (int) Math.round(targetY + fordInfluence * ((seaLevel - 1) - targetY));
                         fordTopY = Math.min(fordTopY, seaLevel - 1);
 
                         if (fordTopY > targetY) {
-                            Block bedBlock = bedBlocks.isEmpty() ? Blocks.GRAVEL : getBedBlock(x, z, bedBlocks);
+                            // reuse the same bedBlock picked for the floor above — same (x, z)
                             for (int y = targetY + 1; y <= fordTopY; y++) {
                                 pos.set(x, y, z);
                                 chunk.setBlockState(pos, bedBlock.defaultBlockState(), false);
@@ -520,7 +622,7 @@ public class RiverGenerator {
                     }
 
                 } else {
-                    double transitionT = (minDist - halfWidth) / (transitionWidth - halfWidth);
+                    double transitionT = (perturbedDist - halfWidth) / transitionBandWidth;
                     double smoothT = smoothStep(transitionT);
                     int targetY = (int) Math.round(seaLevel + (naturalY - seaLevel) * smoothT);
                     BlockState surfaceBlock = getSurfaceBlock(chunk, localX, localZ, naturalY);
@@ -535,7 +637,9 @@ public class RiverGenerator {
                         }
                         pos.set(x, targetY, z);
                         BlockState currentTop = chunk.getBlockState(pos);
-                        if (!currentTop.isAir() && !isTreeBlock(currentTop)) {
+                        // place even over air — same cave-carved-before-rivers hole risk as the
+                        // riverbed floor above; only tree trunks are preserved, not skipped-if-air.
+                        if (!isTreeBlock(currentTop)) {
                             chunk.setBlockState(pos, surfaceBlock, false);
                         }
                     } else if (targetY > naturalY) {
@@ -567,8 +671,9 @@ public class RiverGenerator {
         int worldX = chunk.getPos().getMinBlockX() + localX;
         int worldZ = chunk.getPos().getMinBlockZ() + localZ;
         BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
-        int startY = Math.min(256, chunk.getMaxBuildHeight() - 1);
-        for (int y = startY; y >= chunk.getMinBuildHeight(); y--) {
+        // scan from the true top of the world, not a fixed 256 cap — that assumed vanilla's old
+        // ~320 ceiling and would silently ignore terrain (e.g. a tall mountain) built above it.
+        for (int y = chunk.getMaxBuildHeight() - 1; y >= chunk.getMinBuildHeight(); y--) {
             pos.set(worldX, y, worldZ);
             if (!chunk.getBlockState(pos).isAir()) return y;
         }

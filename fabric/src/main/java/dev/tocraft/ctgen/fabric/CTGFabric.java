@@ -1,6 +1,8 @@
 package dev.tocraft.ctgen.fabric;
 
 import dev.tocraft.ctgen.CTerrainGeneration;
+import dev.tocraft.ctgen.cities.CityPlacer;
+import dev.tocraft.ctgen.cities.CitySpawnLoader;
 import dev.tocraft.ctgen.data.BiomeImageRegistry;
 import dev.tocraft.ctgen.data.HeightImageRegistry;
 import dev.tocraft.ctgen.data.MapWaypointLoader;
@@ -195,6 +197,25 @@ public final class CTGFabric implements ModInitializer {
             }
         });
 
+        // register city spawn reload listener
+        CitySpawnLoader citySpawnLoader = new CitySpawnLoader();
+        ResourceManagerHelper.get(PackType.SERVER_DATA).registerReloadListener(new IdentifiableResourceReloadListener() {
+            @Override
+            public ResourceLocation getFabricId() {
+                return CTerrainGeneration.id("city_spawn_loader");
+            }
+
+            @Override
+            public @NotNull CompletableFuture<Void> reload(PreparationBarrier preparationBarrier, ResourceManager resourceManager, ProfilerFiller preparationsProfiler, ProfilerFiller reloadProfiler, Executor backgroundExecutor, Executor gameExecutor) {
+                return citySpawnLoader.reload(preparationBarrier, resourceManager, preparationsProfiler, reloadProfiler, backgroundExecutor, gameExecutor);
+            }
+
+            @Override
+            public @NotNull String getName() {
+                return citySpawnLoader.getName();
+            }
+        });
+
         // populate structure ID lookup on server start
         ServerLifecycleEvents.SERVER_STARTED.register(
                 CTGStructureSmoothingLoader::populateStructureIdLookup
@@ -203,6 +224,11 @@ public final class CTGFabric implements ModInitializer {
         // clear structure box cache on server stop so it doesn't leak between worlds
         ServerLifecycleEvents.SERVER_STOPPED.register(
                 server -> CTGJigsawSmoothing.clearStructureBoxCache()
+        );
+
+        // close mapped city schematic caches on server stop so file handles don't leak between worlds
+        ServerLifecycleEvents.SERVER_STOPPED.register(
+                server -> CityPlacer.clearAll()
         );
 
         // register commands

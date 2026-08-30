@@ -4,6 +4,7 @@ import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.exceptions.SimpleCommandExceptionType;
 import com.mojang.brigadier.tree.LiteralCommandNode;
 import dev.tocraft.ctgen.CTerrainGeneration;
+import dev.tocraft.ctgen.impl.commands.CTGCitiesCommand;
 import dev.tocraft.ctgen.impl.commands.CTGLocateCommand;
 import dev.tocraft.ctgen.impl.commands.CTGTeleportCommand;
 import net.minecraft.commands.CommandBuildContext;
@@ -19,6 +20,7 @@ public class CTGCommand {
         LiteralCommandNode<CommandSourceStack> rootNode = Commands.literal(CTerrainGeneration.MODID).requires(source -> source.hasPermission(2)).build();
         CTGLocateCommand.register(rootNode, context);
         CTGTeleportCommand.register(rootNode);
+        CTGCitiesCommand.register(rootNode);
         dispatcher.getRoot().addChild(rootNode);
     }
 }

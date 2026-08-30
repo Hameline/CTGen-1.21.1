@@ -413,8 +413,9 @@ public class WallGenerator {
         int worldX = chunk.getPos().getMinBlockX() + localX;
         int worldZ = chunk.getPos().getMinBlockZ() + localZ;
         BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
-        int startY = Math.min(256, chunk.getMaxBuildHeight() - 1);
-        for (int y = startY; y >= chunk.getMinBuildHeight(); y--) {
+        // scan from the true top of the world, not a fixed 256 cap — that assumed vanilla's old
+        // ~320 ceiling and would silently ignore terrain (e.g. a tall mountain) built above it.
+        for (int y = chunk.getMaxBuildHeight() - 1; y >= chunk.getMinBuildHeight(); y--) {
             pos.set(worldX, y, worldZ);
             BlockState state = chunk.getBlockState(pos);
             if (!state.isAir() && !state.is(BlockTags.LEAVES) && !state.is(BlockTags.LOGS)) {

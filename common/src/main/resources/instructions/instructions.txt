@@ -159,12 +159,26 @@ MapSettings fields:
                                             <name>.json) - controls sea level, caves, default block,
                                             build height, etc. CTGen overrides surface HEIGHT itself,
                                             but still uses this for everything else.
+                                            CTGen ships a taller build limit for the vanilla overworld
+                                            itself (Y -64 to 1007, up from vanilla's Y -64 to 319) - it
+                                            overrides both "minecraft:overworld" (noise settings) and
+                                            "minecraft:overworld" (dimension type) in place, so setting
+                                            "noise_gen_settings": "minecraft:overworld" and "type":
+                                            "minecraft:overworld" on the dimension (the normal/default
+                                            values, no special id needed) already gets you the taller
+                                            world. To use a DIFFERENT build height instead, add your
+                                            own noise_settings + dimension_type pair under your own
+                                            namespace with min_y and height agreeing between the two
+                                            (both must be multiples of 16).
   disabled_structure_sets (list of ids, optional, default [])
                                             structure_set ids to fully disable in this world.
   disabled_features       (list of ids, optional, default [])
                                             placed_feature ids to fully disable in this world.
 
-Example:
+Example (data/minecraft/dimension/overworld.json - the full file, "type"
+included - this exact path REPLACES the vanilla overworld):
+{
+  "type": "minecraft:overworld",
   "generator": {
     "type": "ctgen:map_based_chunk_generator",
     "settings": {
@@ -181,6 +195,7 @@ Example:
       "disabled_structure_sets": [ "minecraft:villages" ]
     }
   }
+}
 
 
 --------------------------------------------------------------------
@@ -214,8 +229,10 @@ RiverType fields:
                                             map UI.
   bed_blocks              (list of block ids, optional, default [gravel, sand, clay])
                                             blocks used for the riverbed, blended with noise.
-  transition_multiplier   (double, optional, default 6.0) how many extra half-widths of smooth
-                                            bank transition surround the river on each side.
+  transition_multiplier   (double, optional, default 2.5) width of the smooth bank-to-terrain
+                                            transition band beyond each bank, as a multiple of the
+                                            river's own width. 2.0 = the fade zone is twice as wide
+                                            as the river. 0 = a hard edge with no transition.
   meander_strength        (double, optional, default 0.0) 0-1+, adds natural wandering/curving
                                             noise along the river's length instead of a straight
                                             spline between waypoints. 0 = follows waypoints exactly.

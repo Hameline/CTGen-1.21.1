@@ -18,6 +18,8 @@ public record RiverType(
         int depth,
         boolean visibleOnMap,
         List<Block> bedBlocks,
+        // width, in multiples of the river's own width, of the smooth bank-to-terrain
+        // transition band beyond the riverbank. 2.0 = the fade zone is twice as wide as the river.
         double transitionMultiplier,
         double meanderStrength,
         Optional<Holder<Biome>> biome
@@ -29,7 +31,7 @@ public record RiverType(
             Codec.list(Codecs.BLOCK).optionalFieldOf("bed_blocks", List.of(
                     Blocks.GRAVEL, Blocks.SAND, Blocks.CLAY
             )).forGetter(RiverType::bedBlocks),
-            Codec.DOUBLE.optionalFieldOf("transition_multiplier", 6.0).forGetter(RiverType::transitionMultiplier),
+            Codec.DOUBLE.optionalFieldOf("transition_multiplier", 2.5).forGetter(RiverType::transitionMultiplier),
             Codec.DOUBLE.optionalFieldOf("meander_strength", 0.0).forGetter(RiverType::meanderStrength),
             RegistryFixedCodec.create(Registries.BIOME).optionalFieldOf("biome").forGetter(RiverType::biome)
     ).apply(instance, instance.stable(RiverType::new)));

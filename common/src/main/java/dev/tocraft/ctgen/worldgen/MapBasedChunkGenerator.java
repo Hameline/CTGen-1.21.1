@@ -3,6 +3,7 @@ package dev.tocraft.ctgen.worldgen;
 import com.mojang.serialization.MapCodec;
 import com.mojang.serialization.codecs.RecordCodecBuilder;
 import dev.tocraft.ctgen.CTerrainGeneration;
+import dev.tocraft.ctgen.cities.CityPlacer;
 import dev.tocraft.ctgen.data.SurfaceBuilderAccess;
 import dev.tocraft.ctgen.rivers.RiverGenerator;
 import dev.tocraft.ctgen.rivers.RiverNetworkLoader;
@@ -114,6 +115,7 @@ public class MapBasedChunkGenerator extends ChunkGenerator {
             for (int z = 0; z < 16; z++) {
                 int worldX = chunk.getPos().getMinBlockX() + x;
                 int worldZ = chunk.getPos().getMinBlockZ() + z;
+                if (CityPlacer.isInsideCity(worldX, worldZ)) continue;
                 for (int y = chunk.getMaxBuildHeight() - 1; y >= chunk.getMinBuildHeight(); y--) {
                     pos.set(worldX, y, worldZ);
                     BlockState state = chunk.getBlockState(pos);
@@ -142,6 +144,13 @@ public class MapBasedChunkGenerator extends ChunkGenerator {
 
         // cave entrances — carved last, cuts through everything including mountain features
         applyCaveEntrances(chunk, chunk.getPos());
+
+        // final authoritative stamp — a city's footprint always wins over anything the passes
+        // above may have touched (roads/rivers/walls, jigsaw smoothing, cave carving reaching in
+        // from a neighboring chunk), then places its entities now that a live WorldGenRegion is
+        // available (unlike fillFromNoise, which only has the raw ChunkAccess)
+        CityPlacer.restampBlocks(chunk);
+        CityPlacer.placeEntities(region, chunk);
     }
 
     private void buildSurface(ChunkAccess chunk, WorldGenerationContext heightContext, RandomState noiseConfig, StructureManager structureAccessor, BiomeManager biomeAccess, Registry<Biome> biomeRegistry, Blender blender) {
@@ -218,10 +227,17 @@ public class MapBasedChunkGenerator extends ChunkGenerator {
                     int xOff = chunk.getPos().getBlockX(x);
                     int zOff = chunk.getPos().getBlockZ(z);
 
-                    double surfaceHeight = getSettings().getHeight(noise, xOff, zOff);
-                    int floorHeight = (int) Math.floor(surfaceHeight);
                     int worldX = chunkPos.getMinBlockX() + x;
                     int worldZ = chunkPos.getMinBlockZ() + z;
+
+                    // city columns skip CTGen's own height-based terrain fill entirely — the
+                    // schematic defines the surface there, stamped in below via CityPlacer once
+                    // this loop is done, on top of whatever the delegate noise generator left as
+                    // a solid foundation underneath
+                    if (CityPlacer.isInsideCity(worldX, worldZ)) continue;
+
+                    double surfaceHeight = getSettings().getHeight(noise, xOff, zOff);
+                    int floorHeight = (int) Math.floor(surfaceHeight);
 
                     int delegateTop = chunk.getMinBuildHeight();
                     for (int y = floorHeight; y >= chunk.getMinBuildHeight(); y--) {
@@ -253,6 +269,11 @@ public class MapBasedChunkGenerator extends ChunkGenerator {
                 }
             }
 
+            // stamp in city blocks (and their block entities) for every column of every city
+            // overlapping this chunk — runs after the loop above so it always has the final say
+            // over its footprint, then the heightmap scan below picks up the placed blocks
+            CityPlacer.placeChunk(chunk);
+
             // update all heightmaps to reflect CTGen's actual surface height
             Heightmap heightmapWS = chunk.getOrCreateHeightmapUnprimed(Heightmap.Types.WORLD_SURFACE_WG);
             Heightmap heightmapOS = chunk.getOrCreateHeightmapUnprimed(Heightmap.Types.OCEAN_FLOOR_WG);
@@ -265,9 +286,16 @@ public class MapBasedChunkGenerator extends ChunkGenerator {
                     int worldX = chunkPos.getMinBlockX() + x;
                     int worldZ = chunkPos.getMinBlockZ() + z;
 
-                    double surfaceHeight = getSettings().getHeight(noise, worldX, worldZ);
-                    int floorHeight = (int) Math.floor(surfaceHeight);
-                    int actualSurface = Math.max(floorHeight, getSeaLevel());
+                    // city columns can be far taller than CTGen's own height function would
+                    // suggest, so scan the whole column instead of starting from a computed guess
+                    int actualSurface;
+                    if (CityPlacer.isInsideCity(worldX, worldZ)) {
+                        actualSurface = chunk.getMaxBuildHeight() - 1;
+                    } else {
+                        double surfaceHeight = getSettings().getHeight(noise, worldX, worldZ);
+                        int floorHeight = (int) Math.floor(surfaceHeight);
+                        actualSurface = Math.max(floorHeight, getSeaLevel());
+                    }
 
                     for (int y = actualSurface; y >= chunk.getMinBuildHeight(); y--) {
                         heightPos.set(worldX, y, worldZ);
@@ -353,6 +381,8 @@ public class MapBasedChunkGenerator extends ChunkGenerator {
 
                 int worldX = chunkPos.getMinBlockX() + x;
                 int worldZ = chunkPos.getMinBlockZ() + z;
+
+                if (CityPlacer.isInsideCity(worldX, worldZ)) continue;
 
                 Zone zone = getSettings().getZone(worldX >> 2, worldZ >> 2).value();
                 if (!zone.isMountain()) continue;

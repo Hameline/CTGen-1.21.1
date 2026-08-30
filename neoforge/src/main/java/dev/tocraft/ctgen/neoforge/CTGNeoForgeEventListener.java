@@ -4,6 +4,8 @@ import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonObject;
 import com.mojang.logging.LogUtils;
+import dev.tocraft.ctgen.cities.CityPlacer;
+import dev.tocraft.ctgen.cities.CitySpawnLoader;
 import dev.tocraft.ctgen.data.BiomeImageRegistry;
 import dev.tocraft.ctgen.data.HeightImageRegistry;
 import dev.tocraft.ctgen.data.MapWaypointLoader;
@@ -61,6 +63,7 @@ public final class CTGNeoForgeEventListener {
         event.addListener(new MapWaypointLoader());
         event.addListener(new WallNetworkLoader());
         event.addListener(new CTGStructureSmoothingLoader());
+        event.addListener(new CitySpawnLoader());
     }
 
     private static void registerCommands(@NotNull RegisterCommandsEvent event) {
@@ -101,6 +104,9 @@ public final class CTGNeoForgeEventListener {
 
         // clear structure box cache so it doesn't leak between worlds
         CTGJigsawSmoothing.clearStructureBoxCache();
+
+        // close mapped city schematic caches so file handles don't leak between worlds
+        CityPlacer.clearAll();
 
         // save runtime waypoints to world save
         Path waypointFile = event.getServer().getWorldPath(LevelResource.ROOT)

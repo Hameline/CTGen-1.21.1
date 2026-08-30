@@ -1,5 +1,6 @@
 package dev.tocraft.ctgen.fabric;
 
+import dev.tocraft.ctgen.worldgen.noise.CTGenDimensionTypes;
 import dev.tocraft.ctgen.worldgen.noise.CTGenNoiseSettings;
 import dev.tocraft.ctgen.xtend.CTRegistries;
 import dev.tocraft.ctgen.zone.Zones;
@@ -19,7 +20,8 @@ import java.util.concurrent.CompletableFuture;
 public final class CTGDataGen implements DataGeneratorEntrypoint {
     private static final RegistrySetBuilder BUILDER = new RegistrySetBuilder()
             .add(CTRegistries.ZONES_KEY, Zones::bootstrap)
-            .add(Registries.NOISE_SETTINGS, CTGenNoiseSettings::bootstrap);
+            .add(Registries.NOISE_SETTINGS, CTGenNoiseSettings::bootstrap)
+            .add(Registries.DIMENSION_TYPE, CTGenDimensionTypes::bootstrap);
 
     @Override
     public void onInitializeDataGenerator(@NotNull FabricDataGenerator generator) {

@@ -1,6 +1,5 @@
 package dev.tocraft.ctgen.worldgen.noise;
 
-import dev.tocraft.ctgen.CTerrainGeneration;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.data.worldgen.BootstrapContext;
 import net.minecraft.resources.ResourceKey;
@@ -13,9 +12,19 @@ import java.util.Collections;
 
 @SuppressWarnings("unused")
 public class CTGenNoiseSettings {
-    protected static final NoiseSettings OVERWORLD_NOISE_SETTINGS = NoiseSettings.create(-64, 384, 1, 2);
+    // min_y unchanged at -64; height raised from vanilla's 384 to 1072 (both multiples of 16, as
+    // Minecraft requires) so the top build height goes from Y=319 to Y=1007 - the closest multiple
+    // of 16 clearing the requested 1000 (1056 would only reach Y=991).
+    // CTGenDimensionTypes.OVERWORLD mirrors these same min_y/height values — the two MUST stay in
+    // sync, since a dimension's chunk generator noise settings and its dimension type both encode
+    // world height and Minecraft breaks if they disagree.
+    protected static final NoiseSettings OVERWORLD_NOISE_SETTINGS = NoiseSettings.create(-64, 1072, 1, 2);
 
-    public static final ResourceKey<NoiseGeneratorSettings> OVERWORLD = ResourceKey.create(Registries.NOISE_SETTINGS, CTerrainGeneration.id("overworld"));
+    // registered under vanilla's OWN "minecraft:overworld" key (not a new ctgen: id) so this
+    // OVERRIDES vanilla's built-in noise settings — any dimension json using the standard
+    // "noise_gen_settings": "minecraft:overworld" (the default a MapSettings example would use)
+    // picks up the taller height automatically, no datapack change required.
+    public static final ResourceKey<NoiseGeneratorSettings> OVERWORLD = NoiseGeneratorSettings.OVERWORLD;
 
     public static void bootstrap(BootstrapContext<NoiseGeneratorSettings> context) {
         context.register(OVERWORLD, overworld(context));
