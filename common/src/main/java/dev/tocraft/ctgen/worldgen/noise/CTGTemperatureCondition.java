@@ -49,10 +49,6 @@ public record CTGTemperatureCondition(float threshold) implements SurfaceRules.C
                     float reduction = 0.65f * Math.max(0, context.blockY - 64) / 56.0f;
                     float adjustedTemp = biomeTemp - reduction;
 
-                    LogUtils.getLogger().debug("CTGTemperatureCondition: biome={} temp={} reduction={} adjusted={} threshold={} result={}",
-                            biomeHolder.unwrapKey().map(k -> k.location().toString()).orElse("unknown"),
-                            biomeTemp, reduction, adjustedTemp, threshold, adjustedTemp < threshold);
-
                     return adjustedTemp < threshold;
                 } catch (Exception e) {
                     LogUtils.getLogger().error("CTGTemperatureCondition error", e);

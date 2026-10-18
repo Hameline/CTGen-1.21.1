@@ -380,7 +380,9 @@ public class CTGJigsawSmoothing {
         BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
         // scan from the true top of the world, not a fixed 256 cap — that assumed vanilla's old
         // ~320 ceiling and would silently ignore terrain (e.g. a tall mountain) built above it.
-        for (int y = chunk.getMaxBuildHeight() - 1; y >= chunk.getMinBuildHeight(); y--) {
+        // the worldgen heightmap is kept up to date by every setBlockState during generation,
+        // so it already points at the top non-air block - no need to scan down from the sky
+        for (int y = chunk.getHeight(net.minecraft.world.level.levelgen.Heightmap.Types.WORLD_SURFACE_WG, localX, localZ); y >= chunk.getMinBuildHeight(); y--) {
             pos.set(worldX, y, worldZ);
             BlockState state = chunk.getBlockState(pos);
             if (!state.isAir() && !isVegetation(state)) return y;

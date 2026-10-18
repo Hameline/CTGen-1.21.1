@@ -19,14 +19,9 @@ import java.util.Map;
 
 public class RoadGenerator {
 
-    private static final int MAX_CACHE_SIZE = 100;
-
-    private static final Map<String, List<int[]>> ROAD_POINT_CACHE = new java.util.LinkedHashMap<>(16, 0.75f, true) {
-        @Override
-        protected boolean removeEldestEntry(Map.Entry<String, List<int[]>> eldest) {
-            return size() > MAX_CACHE_SIZE;
-        }
-    };
+    // one entry per road segment of the loaded network (cleared on reload) - concurrent because every
+    // worldgen thread reads it; an access-ordered LinkedHashMap mutates on get() and corrupts under races
+    private static final Map<String, List<int[]>> ROAD_POINT_CACHE = new java.util.concurrent.ConcurrentHashMap<>();
 
     private static final SimplexNoise HEIGHT_NOISE = new SimplexNoise(new LegacyRandomSource(555666777L));
     private static final double HEIGHT_FREQUENCY = 0.00015;
@@ -306,7 +301,9 @@ public class RoadGenerator {
         MutableBlockPos pos = new MutableBlockPos();
         // scan from the true top of the world, not a fixed 256 cap — that assumed vanilla's old
         // ~320 ceiling and would silently ignore terrain (e.g. a tall mountain) built above it.
-        for (int y = chunk.getMaxBuildHeight() - 1; y >= chunk.getMinBuildHeight(); y--) {
+        // the worldgen heightmap is kept up to date by every setBlockState during generation,
+        // so it already points at the top non-air block - no need to scan down from the sky
+        for (int y = chunk.getHeight(net.minecraft.world.level.levelgen.Heightmap.Types.WORLD_SURFACE_WG, localX, localZ); y >= chunk.getMinBuildHeight(); y--) {
             pos.set(worldX, y, worldZ);
             if (!chunk.getBlockState(pos).isAir()) {
                 return y;

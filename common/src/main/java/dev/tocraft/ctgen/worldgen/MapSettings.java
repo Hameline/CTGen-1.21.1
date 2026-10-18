@@ -4,8 +4,8 @@ import com.mojang.serialization.Codec;
 import com.mojang.serialization.codecs.RecordCodecBuilder;
 import dev.tocraft.ctgen.data.BiomeImageRegistry;
 import dev.tocraft.ctgen.data.HeightImageRegistry;
-import dev.tocraft.ctgen.rivers.RiverNetworkLoader;
 import dev.tocraft.ctgen.util.Noise;
+import dev.tocraft.ctgen.worldgen.terrain.CTGenTerrain;
 import dev.tocraft.ctgen.zone.Zone;
 import net.minecraft.core.Holder;
 import net.minecraft.core.HolderGetter;
@@ -101,6 +101,29 @@ public final class MapSettings {
     public void setCliffSeed(long seed) {
         this.cliffNoise = new SimplexNoise(new LegacyRandomSource(seed ^ 0x9A4E6B3C2F1D8E7AL));
         this.cliffJaggedNoise = new SimplexNoise(new LegacyRandomSource(seed ^ 0x3F7C1A9B4D2E6F0CL));
+        // cliffs are part of the height, so anything computed without them is stale
+        CTGenTerrain.invalidateAll();
+    }
+
+    private volatile CTGenTerrain terrain;
+
+    /**
+     * The cached terrain columns for this map and world noise - shared by the chunk generator,
+     * surface rules and everything else that needs the ground height.
+     */
+    public CTGenTerrain terrain(SimplexNoise noise) {
+        CTGenTerrain current = terrain;
+        if (current == null || current.noise() != noise) {
+            synchronized (this) {
+                current = terrain;
+                if (current == null || current.noise() != noise) {
+                    NoiseGeneratorSettings settings = noiseGenSettings.value();
+                    current = new CTGenTerrain(this, noise, settings.seaLevel(), settings.noiseSettings().minY());
+                    terrain = current;
+                }
+            }
+        }
+        return current;
     }
 
     public double sampleCliffNoise(double x, double z) {
@@ -212,21 +235,8 @@ public final class MapSettings {
         double baseHeight = genHeight + addHeight;
 
         // apply jaggedness on top of cliff-snapped terrain
-        baseHeight = applyCliffJaggedness(baseHeight, pX, pY);
-
-        // apply river carving — skip entirely if outside river influence bounds
-        int blockX = pX * 4;
-        int blockZ = pY * 4;
-        double riverModifier = RiverNetworkLoader.getNetwork()
-                .filter(network -> network.isInRiverInfluenceZone(blockX, blockZ))
-                .map(network -> network.getTerrainModifierAt(blockX, blockZ, 63))
-                .orElse(0.0);
-
-        if (riverModifier > 0) {
-            return baseHeight - riverModifier;
-        }
-
-        return baseHeight;
+        // (rivers are carved into this per column by CTGenTerrain, not here)
+        return applyCliffJaggedness(baseHeight, pX, pY);
     }
 
     private double applyCliffJaggedness(double baseHeight, int pX, int pY) {
@@ -255,10 +265,10 @@ public final class MapSettings {
         if (x < 0) baseX -= scaledTransition;
         if (y < 0) baseY -= scaledTransition;
 
-        double th00 = getZone(baseX >> 2, baseY >> 2).value().terrainModifier();
-        double th10 = getZone((baseX + scaledTransition) >> 2, baseY >> 2).value().terrainModifier();
-        double th01 = getZone(baseX >> 2, (baseY + scaledTransition) >> 2).value().terrainModifier();
-        double th11 = getZone((baseX + scaledTransition) >> 2, (baseY + scaledTransition) >> 2).value().terrainModifier();
+        double th00 = corner(baseX, baseY).zone.value().terrainModifier();
+        double th10 = corner(baseX + scaledTransition, baseY).zone.value().terrainModifier();
+        double th01 = corner(baseX, baseY + scaledTransition).zone.value().terrainModifier();
+        double th11 = corner(baseX + scaledTransition, baseY + scaledTransition).zone.value().terrainModifier();
 
         double xPercent = Math.abs((double) (x - baseX) / scaledTransition);
         double yPercent = Math.abs((double) (y - baseY) / scaledTransition);
@@ -278,19 +288,23 @@ public final class MapSettings {
         if (x < 0) baseX -= scaledTransition;
         if (y < 0) baseY -= scaledTransition;
 
-        int h00 = getRedHeight(baseX >> 2, baseY >> 2);
-        int h10 = getRedHeight((baseX + scaledTransition) >> 2, baseY >> 2);
-        int h01 = getRedHeight(baseX >> 2, (baseY + scaledTransition) >> 2);
-        int h11 = getRedHeight((baseX + scaledTransition) >> 2, (baseY + scaledTransition) >> 2);
+        Corner c00 = corner(baseX, baseY);
+        Corner c10 = corner(baseX + scaledTransition, baseY);
+        Corner c01 = corner(baseX, baseY + scaledTransition);
+        Corner c11 = corner(baseX + scaledTransition, baseY + scaledTransition);
+        int h00 = c00.red;
+        int h10 = c10.red;
+        int h01 = c01.red;
+        int h11 = c11.red;
 
         double xPercent = Math.abs((double) (x - baseX) / scaledTransition);
         double yPercent = Math.abs((double) (y - baseY) / scaledTransition);
 
         // check if any corner zone has cliff generation enabled
-        Holder<Zone> zone00 = getZone(baseX >> 2, baseY >> 2);
-        Holder<Zone> zone10 = getZone((baseX + scaledTransition) >> 2, baseY >> 2);
-        Holder<Zone> zone01 = getZone(baseX >> 2, (baseY + scaledTransition) >> 2);
-        Holder<Zone> zone11 = getZone((baseX + scaledTransition) >> 2, (baseY + scaledTransition) >> 2);
+        Holder<Zone> zone00 = c00.zone;
+        Holder<Zone> zone10 = c10.zone;
+        Holder<Zone> zone01 = c01.zone;
+        Holder<Zone> zone11 = c11.zone;
 
         double maxCliffChance = Math.max(
                 Math.max(zone00.value().cliffChance(), zone10.value().cliffChance()),
@@ -404,7 +418,43 @@ public final class MapSettings {
 
     @Nullable
     private Holder<Zone> getByColor(int color) {
-        return zones.stream().filter(zone -> zone.value().color() == color).findAny().orElse(null);
+        Map<Integer, Holder<Zone>> byColor = zonesByColor;
+        if (byColor == null) {
+            byColor = new java.util.HashMap<>();
+            for (Holder<Zone> zone : zones) {
+                byColor.putIfAbsent(zone.value().color(), zone);
+            }
+            zonesByColor = byColor;
+        }
+        return byColor.get(color);
+    }
+
+    // lazily built (zones are holders, possibly unbound while the codec is decoding)
+    private volatile Map<Integer, Holder<Zone>> zonesByColor;
+
+    /**
+     * The red height and zone of one transition-grid corner. getTransitionedHeight and
+     * getTransitionedModifier interpolate between corners {@code transition * scale} blocks
+     * apart, so every column of that cell asks for the same four corners - each of which used to
+     * cost a full domain warp (up to 12 simplex samples) and two image reads, twice over.
+     */
+    private record Corner(long key, BufferedImage map, BufferedImage height, int red, Holder<Zone> zone) {
+    }
+
+    private static final int CORNER_CACHE_SIZE = 4096;
+    private final Corner[] corners = new Corner[CORNER_CACHE_SIZE];
+
+    private Corner corner(int blockX, int blockZ) {
+        long key = ((long) blockX << 32) | (blockZ & 0xFFFFFFFFL);
+        int slot = (int) it.unimi.dsi.fastutil.HashCommon.mix(key) & (CORNER_CACHE_SIZE - 1);
+        BufferedImage map = mapImage.get();
+        BufferedImage height = heightmap.get();
+        Corner corner = corners[slot];
+        if (corner == null || corner.key != key || corner.map != map || corner.height != height) {
+            corner = new Corner(key, map, height, getRedHeight(blockX >> 2, blockZ >> 2), getZone(blockX >> 2, blockZ >> 2));
+            corners[slot] = corner;
+        }
+        return corner;
     }
 
     @ApiStatus.Internal

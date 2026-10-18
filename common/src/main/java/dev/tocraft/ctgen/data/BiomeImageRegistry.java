@@ -44,6 +44,7 @@ public class BiomeImageRegistry extends SimplePreparableReloadListener<Map<Resou
     protected void apply(Map<ResourceLocation, BufferedImage> preparedMaps, ResourceManager resourceManager, ProfilerFiller profiler) {
         MAPS.clear();
         MAPS.putAll(preparedMaps);
+        dev.tocraft.ctgen.worldgen.terrain.CTGenTerrain.invalidateAll();
     }
 
     @Nullable

@@ -1,22 +1,26 @@
 package dev.tocraft.ctgen.worldgen;
 
+import com.google.common.collect.Sets;
 import com.mojang.serialization.MapCodec;
 import com.mojang.serialization.codecs.RecordCodecBuilder;
 import dev.tocraft.ctgen.CTerrainGeneration;
 import dev.tocraft.ctgen.cities.CityPlacer;
 import dev.tocraft.ctgen.data.SurfaceBuilderAccess;
 import dev.tocraft.ctgen.rivers.RiverGenerator;
-import dev.tocraft.ctgen.rivers.RiverNetworkLoader;
 import dev.tocraft.ctgen.roads.RoadGenerator;
 import dev.tocraft.ctgen.roads.RoadNetworkLoader;
 import dev.tocraft.ctgen.structures.CTGJigsawSmoothing;
 import dev.tocraft.ctgen.walls.WallGenerator;
 import dev.tocraft.ctgen.walls.WallNetworkLoader;
+import dev.tocraft.ctgen.worldgen.terrain.CTGenDensity;
+import dev.tocraft.ctgen.worldgen.terrain.CTGenTerrain;
+import dev.tocraft.ctgen.worldgen.terrain.CarveGuard;
 import dev.tocraft.ctgen.zone.Zone;
 import net.minecraft.SharedConstants;
 import net.minecraft.Util;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Holder;
+import net.minecraft.core.HolderGetter;
 import net.minecraft.core.HolderLookup;
 import net.minecraft.core.Registry;
 import net.minecraft.core.RegistryAccess;
@@ -33,18 +37,20 @@ import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.chunk.ChunkAccess;
 import net.minecraft.world.level.chunk.ChunkGenerator;
 import net.minecraft.world.level.chunk.ChunkGeneratorStructureState;
+import net.minecraft.world.level.chunk.LevelChunkSection;
 import net.minecraft.world.level.levelgen.*;
 import net.minecraft.world.level.levelgen.GenerationStep.Carving;
 import net.minecraft.world.level.levelgen.blending.Blender;
 import net.minecraft.world.level.levelgen.structure.StructureSet;
 import net.minecraft.world.level.levelgen.structure.templatesystem.StructureTemplateManager;
+import net.minecraft.world.level.levelgen.synth.NormalNoise;
 import net.minecraft.world.level.levelgen.synth.SimplexNoise;
 import org.jetbrains.annotations.ApiStatus;
 import org.jetbrains.annotations.NotNull;
 
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
-import java.util.stream.Stream;
 
 public class MapBasedChunkGenerator extends ChunkGenerator {
     public static final ResourceLocation ID = CTerrainGeneration.id("map_based_chunk_generator");
@@ -52,10 +58,14 @@ public class MapBasedChunkGenerator extends ChunkGenerator {
             MapSettings.CODEC.fieldOf("settings").forGetter(MapBasedChunkGenerator::getSettings)
     ).apply(instance, instance.stable(MapBasedChunkGenerator::of)));
 
+    private static final BlockState AIR = Blocks.AIR.defaultBlockState();
+
+    // only used for vanilla's carvers (which need nothing but the biome source and a NoiseChunk,
+    // which this generator creates itself) - terrain, caves and aquifers come from fillFromNoise
     private final NoiseBasedChunkGenerator delegate;
 
     protected final MapBasedBiomeSource biomeSource;
-    private SimplexNoise noise = null;
+    private volatile SimplexNoise noise = null;
 
     private MapBasedChunkGenerator(MapBasedBiomeSource biomeSource) {
         super(biomeSource);
@@ -75,24 +85,56 @@ public class MapBasedChunkGenerator extends ChunkGenerator {
         return CODEC;
     }
 
+    /**
+     * The {@link RandomState} the server must use for this generator (installed by ChunkMapMixin):
+     * the configured noise settings with CTGen's router ({@link CTGenDensity}) - vanilla's own
+     * caves, aquifers and ore veins, shaped around CTGen's map terrain.
+     */
+    public RandomState createRandomState(RegistryAccess registryAccess, long seed) {
+        NoiseGeneratorSettings settings = getNoiseGenSettings();
+        HolderGetter<NormalNoise.NoiseParameters> noises = registryAccess.lookupOrThrow(Registries.NOISE);
+        // the CTGen height noise only depends on the seed, not the router
+        setNoise(RandomState.create(settings, noises, seed));
+
+        NoiseRouter router = CTGenDensity.createRouter(settings.noiseRouter(), terrain(), settings.noiseSettings().minY(),
+                registryAccess.lookupOrThrow(Registries.DENSITY_FUNCTION), noises);
+        NoiseGeneratorSettings withRouter = new NoiseGeneratorSettings(
+                settings.noiseSettings(),
+                settings.defaultBlock(),
+                settings.defaultFluid(),
+                router,
+                settings.surfaceRule(),
+                settings.spawnTarget(),
+                settings.seaLevel(),
+                settings.disableMobGeneration(),
+                settings.aquifersEnabled(),
+                settings.oreVeinsEnabled(),
+                settings.useLegacyRandomSource()
+        );
+        return RandomState.create(withRouter, noises, seed);
+    }
+
+    /** CTGen's ground, cached per column - see {@link CTGenTerrain}. */
+    @ApiStatus.Internal
+    public CTGenTerrain terrain() {
+        return getSettings().terrain(noise);
+    }
+
     @Override
     public void applyCarvers(WorldGenRegion chunkRegion, long seed, RandomState noiseConfig, BiomeManager biomeAccess, StructureManager structureAccessor, ChunkAccess chunk, Carving carving) {
         setNoise(noiseConfig);
 
         NoiseGeneratorSettings chunkGeneratorSettings = this.getNoiseGenSettings();
         Blender blender = Blender.of(chunkRegion);
-        chunk.getOrCreateNoiseChunk(chunk2 ->
-                NoiseChunk.forChunk(
-                        chunk2,
-                        noiseConfig,
-                        Beardifier.forStructuresInChunk(structureAccessor, chunk2.getPos()),
-                        chunkGeneratorSettings,
-                        createFluidPicker(chunkGeneratorSettings),
-                        blender
-                )
-        );
+        chunk.getOrCreateNoiseChunk(chunk2 -> createChunkNoiseSampler(chunkGeneratorSettings, chunk2, structureAccessor, blender, noiseConfig));
 
-        delegate.applyCarvers(chunkRegion, seed, noiseConfig, biomeAccess, structureAccessor, chunk, carving);
+        // vanilla's cave/canyon carvers, kept out of the crust under rivers/lakes/coasts and walls
+        CarveGuard.begin(terrain().tile(chunk.getPos().x, chunk.getPos().z));
+        try {
+            delegate.applyCarvers(chunkRegion, seed, noiseConfig, biomeAccess, structureAccessor, chunk, carving);
+        } finally {
+            CarveGuard.end();
+        }
     }
 
     @Override
@@ -101,54 +143,47 @@ public class MapBasedChunkGenerator extends ChunkGenerator {
         if (SharedConstants.debugVoidTerrain(chunk.getPos())) {
             return;
         }
+        CTGenTerrain terrain = terrain();
+        CTGenTerrain.Tile tile = terrain.tile(chunk.getPos().x, chunk.getPos().z);
+
         WorldGenerationContext heightContext = new WorldGenerationContext(this, region);
         this.buildSurface(chunk, heightContext, noiseConfig, structures, region.getBiomeManager(), biomeRegistry(region), Blender.of(region));
 
         // apply mountain surface — stone base with snow/ice streaks
         // runs before snow layer placement so snow layers go on top of snow blocks
-        applyMountainSurface(chunk);
+        applyMountainSurface(chunk, terrain);
 
         // place snow layers on top of CTGen-placed snow blocks
         BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
-        BlockPos.MutableBlockPos above = new BlockPos.MutableBlockPos();
         for (int x = 0; x < 16; x++) {
             for (int z = 0; z < 16; z++) {
                 int worldX = chunk.getPos().getMinBlockX() + x;
                 int worldZ = chunk.getPos().getMinBlockZ() + z;
                 if (CityPlacer.isInsideCity(worldX, worldZ)) continue;
-                for (int y = chunk.getMaxBuildHeight() - 1; y >= chunk.getMinBuildHeight(); y--) {
-                    pos.set(worldX, y, worldZ);
-                    BlockState state = chunk.getBlockState(pos);
-                    if (state.isAir()) continue;
-                    if (state.is(Blocks.SNOW_BLOCK)) {
-                        above.set(worldX, y + 1, worldZ);
-                        if (chunk.getBlockState(above).isAir()) {
-                            chunk.setBlockState(above, Blocks.SNOW.defaultBlockState(), false);
-                        }
-                    }
-                    break;
+                int top = chunk.getHeight(Heightmap.Types.WORLD_SURFACE_WG, x, z);
+                pos.set(worldX, top, worldZ);
+                if (top + 1 < chunk.getMaxBuildHeight() && chunk.getBlockState(pos).is(Blocks.SNOW_BLOCK)) {
+                    pos.set(worldX, top + 1, worldZ);
+                    chunk.setBlockState(pos, Blocks.SNOW.defaultBlockState(), false);
                 }
             }
         }
 
-        // roads/rivers/walls generate after surface
+        // roads/rivers/walls generate after surface - the river valleys themselves are already part
+        // of the terrain, this lays the beds and keeps channels clear of roads
         RoadNetworkLoader.getNetwork().ifPresent(network -> RoadGenerator.generateRoads(chunk, network));
-        RiverNetworkLoader.getNetwork().ifPresent(network -> RiverGenerator.generateRivers(chunk, network));
+        RiverGenerator.generateRivers(chunk, tile, terrain.waterTop());
         WallNetworkLoader.getNetwork().ifPresent(network -> WallGenerator.generateWalls(chunk, network));
 
-        // structure smoothing — pass the CTGen density-level height so it can measure a
-        // structure's whole footprint (which may span many chunks) up front, regardless of
-        // which chunk happens to generate first
-        CTGJigsawSmoothing.smoothChunkAroundStructures(chunk, structures,
-                (x, z) -> getSettings().getHeight(noise, x, z));
-
-        // cave entrances — carved last, cuts through everything including mountain features
-        applyCaveEntrances(chunk, chunk.getPos());
+        // structure smoothing — pass the CTGen ground height so it can measure a structure's whole
+        // footprint (which may span many chunks) up front, regardless of which chunk happens to
+        // generate first
+        CTGJigsawSmoothing.smoothChunkAroundStructures(chunk, structures, (x, z) -> terrain.floor(x, z));
 
         // final authoritative stamp — a city's footprint always wins over anything the passes
-        // above may have touched (roads/rivers/walls, jigsaw smoothing, cave carving reaching in
-        // from a neighboring chunk), then places its entities now that a live WorldGenRegion is
-        // available (unlike fillFromNoise, which only has the raw ChunkAccess)
+        // above may have touched (roads/rivers/walls, jigsaw smoothing), then places its entities
+        // now that a live WorldGenRegion is available (unlike fillFromNoise, which only has the raw
+        // ChunkAccess)
         CityPlacer.restampBlocks(chunk);
         CityPlacer.placeEntities(region, chunk);
     }
@@ -190,184 +225,173 @@ public class MapBasedChunkGenerator extends ChunkGenerator {
     }
 
     private Aquifer.@NotNull FluidPicker createFluidPicker(@NotNull NoiseGeneratorSettings settings) {
-        Aquifer.FluidStatus fluidLevel = new Aquifer.FluidStatus(-54, Blocks.LAVA.defaultBlockState());
-        int i = settings.seaLevel();
-        return (x, y, z) -> {
-            if (y < Math.min(-54, i)) {
-                return fluidLevel;
-            }
-            return new Aquifer.FluidStatus(settings.seaLevel(), settings.defaultFluid());
-        };
+        Aquifer.FluidStatus lava = new Aquifer.FluidStatus(-54, Blocks.LAVA.defaultBlockState());
+        Aquifer.FluidStatus sea = new Aquifer.FluidStatus(settings.seaLevel(), settings.defaultFluid());
+        int lavaBelow = Math.min(-54, settings.seaLevel());
+        return (x, y, z) -> y < lavaBelow ? lava : sea;
     }
 
+    /**
+     * Vanilla's {@code NoiseBasedChunkGenerator.doFill}, run directly on CTGen's router.
+     * <p>
+     * Used to be: let the vanilla delegate generate a whole vanilla world column (blocking on its
+     * future from inside another background task), then scan every column and overwrite it with
+     * stone/air/water by CTGen's height, recomputing that height twice per column. Now there is
+     * one pass, and it skips what can't produce anything: cells entirely above both the ground
+     * and the sea are never evaluated, and blocks above the ground are air/sea water without
+     * asking the density functions or the aquifer.
+     */
     @Override
     public @NotNull CompletableFuture<ChunkAccess> fillFromNoise(Blender blender, RandomState noiseConfig, StructureManager structureAccessor, @NotNull ChunkAccess chunk) {
         setNoise(noiseConfig);
 
-        NoiseSettings generationShapeConfig = getNoiseGenSettings().noiseSettings().clampToHeightAccessor(chunk.getHeightAccessorForGeneration());
-        int k = Mth.floorDiv(generationShapeConfig.height(), generationShapeConfig.noiseSizeVertical());
-        if (k <= 0) {
+        NoiseSettings noiseSettings = getNoiseGenSettings().noiseSettings().clampToHeightAccessor(chunk.getHeightAccessorForGeneration());
+        int minY = noiseSettings.minY();
+        int cellMinY = Mth.floorDiv(minY, noiseSettings.getCellHeight());
+        int cellCountY = Mth.floorDiv(noiseSettings.height(), noiseSettings.getCellHeight());
+        if (cellCountY <= 0) {
             return CompletableFuture.completedFuture(chunk);
         }
 
-        return CompletableFuture.supplyAsync(() -> {
-            try {
-                delegate.fillFromNoise(blender, noiseConfig, structureAccessor, chunk).get();
-            } catch (Exception e) {
-                throw new RuntimeException(e);
+        return CompletableFuture.supplyAsync(Util.wrapThreadWithTaskName("wgen_fill_noise", () -> {
+            int topSection = chunk.getSectionIndex(cellCountY * noiseSettings.getCellHeight() - 1 + minY);
+            int bottomSection = chunk.getSectionIndex(minY);
+            Set<LevelChunkSection> sections = Sets.newHashSet();
+            for (int i = topSection; i >= bottomSection; i--) {
+                LevelChunkSection section = chunk.getSection(i);
+                section.acquire();
+                sections.add(section);
             }
 
-            BlockState defaultBlock = biomeSource.settings.noiseGenSettings.value().defaultBlock();
-            BlockState defaultFluid = biomeSource.settings.noiseGenSettings.value().defaultFluid();
-            ChunkPos chunkPos = chunk.getPos();
-            BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
-
-            for (int x = 0; x < 16; x++) {
-                for (int z = 0; z < 16; z++) {
-                    int xOff = chunk.getPos().getBlockX(x);
-                    int zOff = chunk.getPos().getBlockZ(z);
-
-                    int worldX = chunkPos.getMinBlockX() + x;
-                    int worldZ = chunkPos.getMinBlockZ() + z;
-
-                    // city columns skip CTGen's own height-based terrain fill entirely — the
-                    // schematic defines the surface there, stamped in below via CityPlacer once
-                    // this loop is done, on top of whatever the delegate noise generator left as
-                    // a solid foundation underneath
-                    if (CityPlacer.isInsideCity(worldX, worldZ)) continue;
-
-                    double surfaceHeight = getSettings().getHeight(noise, xOff, zOff);
-                    int floorHeight = (int) Math.floor(surfaceHeight);
-
-                    int delegateTop = chunk.getMinBuildHeight();
-                    for (int y = floorHeight; y >= chunk.getMinBuildHeight(); y--) {
-                        pos.set(worldX, y, worldZ);
-                        BlockState state = chunk.getBlockState(pos);
-                        if (!state.isAir() && !state.is(Blocks.WATER)) {
-                            delegateTop = y;
-                            break;
-                        }
-                    }
-
-                    for (int y = delegateTop + 1; y < floorHeight; y++) {
-                        pos.set(worldX, y, worldZ);
-                        chunk.setBlockState(pos, defaultBlock, false);
-                    }
-
-                    for (int y = floorHeight; y < chunk.getMaxBuildHeight(); y++) {
-                        pos.set(worldX, y, worldZ);
-                        BlockState state = chunk.getBlockState(pos);
-                        if (!state.isAir()) {
-                            chunk.setBlockState(pos, Blocks.AIR.defaultBlockState(), false);
-                        }
-                    }
-
-                    for (int y = floorHeight; y < getSeaLevel(); y++) {
-                        pos.set(worldX, y, worldZ);
-                        chunk.setBlockState(pos, defaultFluid, false);
-                    }
+            try {
+                doFill(blender, structureAccessor, noiseConfig, chunk, cellMinY, cellCountY);
+            } finally {
+                for (LevelChunkSection section : sections) {
+                    section.release();
                 }
             }
 
             // stamp in city blocks (and their block entities) for every column of every city
-            // overlapping this chunk — runs after the loop above so it always has the final say
-            // over its footprint, then the heightmap scan below picks up the placed blocks
+            // overlapping this chunk — runs after the fill so it always has the final say over
+            // its footprint
             CityPlacer.placeChunk(chunk);
-
-            // update all heightmaps to reflect CTGen's actual surface height
-            Heightmap heightmapWS = chunk.getOrCreateHeightmapUnprimed(Heightmap.Types.WORLD_SURFACE_WG);
-            Heightmap heightmapOS = chunk.getOrCreateHeightmapUnprimed(Heightmap.Types.OCEAN_FLOOR_WG);
-            Heightmap heightmapWSC = chunk.getOrCreateHeightmapUnprimed(Heightmap.Types.WORLD_SURFACE);
-            Heightmap heightmapOSC = chunk.getOrCreateHeightmapUnprimed(Heightmap.Types.OCEAN_FLOOR);
-
-            BlockPos.MutableBlockPos heightPos = new BlockPos.MutableBlockPos();
-            for (int x = 0; x < 16; x++) {
-                for (int z = 0; z < 16; z++) {
-                    int worldX = chunkPos.getMinBlockX() + x;
-                    int worldZ = chunkPos.getMinBlockZ() + z;
-
-                    // city columns can be far taller than CTGen's own height function would
-                    // suggest, so scan the whole column instead of starting from a computed guess
-                    int actualSurface;
-                    if (CityPlacer.isInsideCity(worldX, worldZ)) {
-                        actualSurface = chunk.getMaxBuildHeight() - 1;
-                    } else {
-                        double surfaceHeight = getSettings().getHeight(noise, worldX, worldZ);
-                        int floorHeight = (int) Math.floor(surfaceHeight);
-                        actualSurface = Math.max(floorHeight, getSeaLevel());
-                    }
-
-                    for (int y = actualSurface; y >= chunk.getMinBuildHeight(); y--) {
-                        heightPos.set(worldX, y, worldZ);
-                        BlockState state = chunk.getBlockState(heightPos);
-                        if (!state.isAir()) {
-                            heightmapWS.update(x, y, z, state);
-                            heightmapOS.update(x, y, z, state);
-                            heightmapWSC.update(x, y, z, state);
-                            heightmapOSC.update(x, y, z, state);
-                            break;
-                        }
-                    }
-                }
-            }
-
             return chunk;
-        }, Util.backgroundExecutor());
+        }), Util.backgroundExecutor());
     }
 
-    private @NotNull ChunkAccess fill(@NotNull ChunkAccess chunk) {
-        BlockState defaultBlock = biomeSource.settings.noiseGenSettings.value().defaultBlock();
-        BlockState defaultFluid = biomeSource.settings.noiseGenSettings.value().defaultFluid();
-        BlockState deepslate = Blocks.DEEPSLATE.defaultBlockState();
-        BlockState bedrock = Blocks.BEDROCK.defaultBlockState();
-
+    private void doFill(Blender blender, StructureManager structures, RandomState randomState, ChunkAccess chunk, int cellMinY, int cellCountY) {
+        NoiseGeneratorSettings settings = getNoiseGenSettings();
+        CTGenTerrain terrain = terrain();
         ChunkPos chunkPos = chunk.getPos();
-        int minY = getNoiseGenSettings().noiseSettings().minY();
-        int seaLevel = getSeaLevel();
+        CTGenTerrain.Tile tile = terrain.tile(chunkPos.x, chunkPos.z);
+        // the interpolation's last row/column of cell corners lies in these chunks
+        terrain.tile(chunkPos.x + 1, chunkPos.z);
+        terrain.tile(chunkPos.x, chunkPos.z + 1);
+        terrain.tile(chunkPos.x + 1, chunkPos.z + 1);
 
-        for (int x = 0; x < 16; x++) {
-            for (int z = 0; z < 16; z++) {
-                int xOff = chunk.getPos().getBlockX(x);
-                int zOff = chunk.getPos().getBlockZ(z);
+        NoiseChunk noiseChunk = chunk.getOrCreateNoiseChunk(c -> createChunkNoiseSampler(settings, c, structures, blender, randomState));
+        Heightmap oceanFloor = chunk.getOrCreateHeightmapUnprimed(Heightmap.Types.OCEAN_FLOOR_WG);
+        Heightmap worldSurface = chunk.getOrCreateHeightmapUnprimed(Heightmap.Types.WORLD_SURFACE_WG);
+        int minX = chunkPos.getMinBlockX();
+        int minZ = chunkPos.getMinBlockZ();
+        int seaLevel = settings.seaLevel();
+        BlockState defaultBlock = settings.defaultBlock();
+        BlockState seaFluid = settings.defaultFluid();
+        Aquifer aquifer = noiseChunk.aquifer();
+        BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
 
-                double surfaceHeight = getSettings().getHeight(noise, xOff, zOff);
-                int floorHeight = (int) Math.floor(surfaceHeight);
+        noiseChunk.initializeForFirstCellX();
+        int cellWidth = noiseChunk.cellWidth();
+        int cellHeight = noiseChunk.cellHeight();
+        int cellCountXZ = 16 / cellWidth;
 
-                for (int y = minY; y < floorHeight; y++) {
-                    BlockPos pos = chunkPos.getBlockAt(x, y, z);
+        for (int cellX = 0; cellX < cellCountXZ; cellX++) {
+            noiseChunk.advanceCellX(cellX);
 
-                    if (y <= minY + 4) {
-                        if (y == minY || (y <= minY + 4 && hashCoord(x + chunkPos.getMinBlockX(), y, z + chunkPos.getMinBlockZ()) % (y - minY + 1) == 0)) {
-                            chunk.setBlockState(pos, bedrock, false);
-                            continue;
-                        }
-                    }
-
-                    if (y < 0) {
-                        chunk.setBlockState(pos, deepslate, false);
-                    } else if (y < 8) {
-                        long hash = hashCoord(x + chunkPos.getMinBlockX(), y, z + chunkPos.getMinBlockZ());
-                        if (hash % 8 < (8 - y)) {
-                            chunk.setBlockState(pos, deepslate, false);
-                        } else {
-                            chunk.setBlockState(pos, defaultBlock, false);
-                        }
-                    } else {
-                        chunk.setBlockState(pos, defaultBlock, false);
+            for (int cellZ = 0; cellZ < cellCountXZ; cellZ++) {
+                // highest ground and highest ground-or-sea of this cell's columns
+                int maxFloor = Integer.MIN_VALUE;
+                for (int dx = 0; dx < cellWidth; dx++) {
+                    for (int dz = 0; dz < cellWidth; dz++) {
+                        maxFloor = Math.max(maxFloor, tile.floor(cellX * cellWidth + dx, cellZ * cellWidth + dz));
                     }
                 }
+                int maxFilled = Math.max(maxFloor, seaLevel);
 
-                for (int y = floorHeight; y < seaLevel; y++) {
-                    BlockPos pos = chunkPos.getBlockAt(x, y, z);
-                    chunk.setBlockState(pos, defaultFluid, false);
+                int sectionIndex = chunk.getSectionsCount() - 1;
+                LevelChunkSection section = chunk.getSection(sectionIndex);
+
+                for (int cellY = cellCountY - 1; cellY >= 0; cellY--) {
+                    int cellBottom = (cellMinY + cellY) * cellHeight;
+                    // nothing but air: leave the (empty) section alone
+                    if (cellBottom >= maxFilled) continue;
+                    // ground in this cell: needs the density functions (caves, aquifer, ores)
+                    boolean underground = cellBottom < maxFloor;
+                    if (underground) {
+                        noiseChunk.selectCellYZ(cellY, cellZ);
+                    }
+
+                    for (int yInCell = cellHeight - 1; yInCell >= 0; yInCell--) {
+                        int y = cellBottom + yInCell;
+                        int newSectionIndex = chunk.getSectionIndex(y);
+                        if (sectionIndex != newSectionIndex) {
+                            sectionIndex = newSectionIndex;
+                            section = chunk.getSection(newSectionIndex);
+                        }
+                        if (underground) {
+                            noiseChunk.updateForY(y, (double) yInCell / cellHeight);
+                        }
+
+                        for (int xInCell = 0; xInCell < cellWidth; xInCell++) {
+                            int x = minX + cellX * cellWidth + xInCell;
+                            int localX = x & 15;
+                            if (underground) {
+                                noiseChunk.updateForX(x, (double) xInCell / cellWidth);
+                            }
+
+                            for (int zInCell = 0; zInCell < cellWidth; zInCell++) {
+                                int z = minZ + cellZ * cellWidth + zInCell;
+                                int localZ = z & 15;
+                                if (underground) {
+                                    noiseChunk.updateForZ(z, (double) zInCell / cellWidth);
+                                }
+
+                                BlockState state;
+                                boolean fromAquifer = false;
+                                if (y >= tile.floor(localX, localZ)) {
+                                    // above CTGen's ground: open sea/river/lake water up to sea level
+                                    if (y >= seaLevel) continue;
+                                    state = seaFluid;
+                                } else {
+                                    state = noiseChunk.getInterpolatedState();
+                                    if (state == null) {
+                                        state = defaultBlock;
+                                    }
+                                    fromAquifer = true;
+                                }
+
+                                if (state != AIR) {
+                                    section.setBlockState(localX, y & 15, localZ, state, false);
+                                    oceanFloor.update(localX, y, localZ, state);
+                                    worldSurface.update(localX, y, localZ, state);
+                                    if (fromAquifer && aquifer.shouldScheduleFluidUpdate() && !state.getFluidState().isEmpty()) {
+                                        pos.set(x, y, z);
+                                        chunk.markPosForPostprocessing(pos);
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
+
+            noiseChunk.swapSlices();
         }
 
-        return chunk;
+        noiseChunk.stopInterpolation();
     }
 
-    private void applyMountainSurface(@NotNull ChunkAccess chunk) {
+    private void applyMountainSurface(@NotNull ChunkAccess chunk, @NotNull CTGenTerrain terrain) {
         ChunkPos chunkPos = chunk.getPos();
         BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
         BlockPos.MutableBlockPos below = new BlockPos.MutableBlockPos();
@@ -387,14 +411,9 @@ public class MapBasedChunkGenerator extends ChunkGenerator {
                 Zone zone = getSettings().getZone(worldX >> 2, worldZ >> 2).value();
                 if (!zone.isMountain()) continue;
 
-                int surfaceY = chunk.getMaxBuildHeight() - 1;
+                // top non-air block, straight from the live worldgen heightmap
+                int surfaceY = chunk.getHeight(Heightmap.Types.WORLD_SURFACE_WG, x, z);
                 pos.set(worldX, surfaceY, worldZ);
-
-                while (surfaceY > chunk.getMinBuildHeight()
-                        && chunk.getBlockState(pos).isAir()) {
-                    surfaceY--;
-                    pos.set(worldX, surfaceY, worldZ);
-                }
 
                 if (surfaceY <= chunk.getMinBuildHeight()) continue;
 
@@ -405,27 +424,27 @@ public class MapBasedChunkGenerator extends ChunkGenerator {
                 /*
                  * Height samples
                  */
-                double hCenter = getSettings().getHeight(noise, worldX, worldZ);
+                double hCenter = terrain.height(worldX, worldZ);
 
-                double hN1 = getSettings().getHeight(noise, worldX, worldZ - 1);
-                double hS1 = getSettings().getHeight(noise, worldX, worldZ + 1);
-                double hE1 = getSettings().getHeight(noise, worldX + 1, worldZ);
-                double hW1 = getSettings().getHeight(noise, worldX - 1, worldZ);
+                double hN1 = terrain.height(worldX, worldZ - 1);
+                double hS1 = terrain.height(worldX, worldZ + 1);
+                double hE1 = terrain.height(worldX + 1, worldZ);
+                double hW1 = terrain.height(worldX - 1, worldZ);
 
-                double hN4 = getSettings().getHeight(noise, worldX, worldZ - 4);
-                double hS4 = getSettings().getHeight(noise, worldX, worldZ + 4);
-                double hE4 = getSettings().getHeight(noise, worldX + 4, worldZ);
-                double hW4 = getSettings().getHeight(noise, worldX - 4, worldZ);
+                double hN4 = terrain.height(worldX, worldZ - 4);
+                double hS4 = terrain.height(worldX, worldZ + 4);
+                double hE4 = terrain.height(worldX + 4, worldZ);
+                double hW4 = terrain.height(worldX - 4, worldZ);
 
-                double hN8 = getSettings().getHeight(noise, worldX, worldZ - 8);
-                double hS8 = getSettings().getHeight(noise, worldX, worldZ + 8);
-                double hE8 = getSettings().getHeight(noise, worldX + 8, worldZ);
-                double hW8 = getSettings().getHeight(noise, worldX - 8, worldZ);
+                double hN8 = terrain.height(worldX, worldZ - 8);
+                double hS8 = terrain.height(worldX, worldZ + 8);
+                double hE8 = terrain.height(worldX + 8, worldZ);
+                double hW8 = terrain.height(worldX - 8, worldZ);
 
-                double hNE8 = getSettings().getHeight(noise, worldX + 6, worldZ - 6);
-                double hNW8 = getSettings().getHeight(noise, worldX - 6, worldZ - 6);
-                double hSE8 = getSettings().getHeight(noise, worldX + 6, worldZ + 6);
-                double hSW8 = getSettings().getHeight(noise, worldX - 6, worldZ + 6);
+                double hNE8 = terrain.height(worldX + 6, worldZ - 6);
+                double hNW8 = terrain.height(worldX - 6, worldZ - 6);
+                double hSE8 = terrain.height(worldX + 6, worldZ + 6);
+                double hSW8 = terrain.height(worldX - 6, worldZ + 6);
 
 
                 double localSlope = Math.max(
@@ -487,14 +506,12 @@ public class MapBasedChunkGenerator extends ChunkGenerator {
                         (Math.sin(acrossSlope * 0.005 + 31.4) + 1.0) * 0.5;
 
 
-                double blobBottomH = getSettings().getHeight(
-                        noise,
+                double blobBottomH = terrain.height(
                         (int)(worldX - 15 * slopeDirX),
                         (int)(worldZ - 15 * slopeDirZ)
                 );
 
-                double blobTopH = getSettings().getHeight(
-                        noise,
+                double blobTopH = terrain.height(
                         (int)(worldX + 15 * slopeDirX),
                         (int)(worldZ + 15 * slopeDirZ)
                 );
@@ -843,151 +860,6 @@ public class MapBasedChunkGenerator extends ChunkGenerator {
         }
     }
 
-    private void applyCaveEntrances(@NotNull ChunkAccess chunk, ChunkPos chunkPos) {
-        int searchRadius = 8;
-        for (int cx = chunkPos.x - searchRadius; cx <= chunkPos.x + searchRadius; cx++) {
-            for (int cz = chunkPos.z - searchRadius; cz <= chunkPos.z + searchRadius; cz++) {
-                long chunkHash = hashCoord(cx, 0, cz);
-                if (Math.abs(chunkHash) % 250 != 0) continue;
-
-                long posHash = hashCoord(cx, 1, cz);
-                int seedLocalX = (int)(Math.abs(posHash) % 16);
-                int seedLocalZ = (int)(Math.abs(posHash >> 4) % 16);
-                int seedWorldX = cx * 16 + seedLocalX;
-                int seedWorldZ = cz * 16 + seedLocalZ;
-
-                int surfaceY = (int) getSettings().getHeight(noise, seedWorldX, seedWorldZ);
-                if (surfaceY <= chunk.getMinBuildHeight() + 20) continue;
-
-                long depthHash = hashCoord(cx, 3, cz);
-                int estimatedCaveDepth = 25 + (int)(Math.abs(depthHash) % 225);
-                int caveY = surfaceY - estimatedCaveDepth;
-                if (caveY <= chunk.getMinBuildHeight() + 5) continue;
-
-                // check if the destination is a water cave by scanning blocks
-                // at the estimated cave Y in our chunk if the seed column is within it
-                boolean isWaterCave = false;
-                int seedLocalBx = seedWorldX - chunkPos.getMinBlockX();
-                int seedLocalBz = seedWorldZ - chunkPos.getMinBlockZ();
-                if (seedLocalBx >= 0 && seedLocalBx < 16 && seedLocalBz >= 0 && seedLocalBz < 16) {
-                    BlockPos.MutableBlockPos scanPos = new BlockPos.MutableBlockPos();
-                    int waterCount = 0;
-                    int airCount = 0;
-                    for (int dy = -3; dy <= 3; dy++) {
-                        int checkY = caveY + dy;
-                        if (checkY <= chunk.getMinBuildHeight() || checkY >= chunk.getMaxBuildHeight()) continue;
-                        scanPos.set(seedWorldX, checkY, seedWorldZ);
-                        BlockState state = chunk.getBlockState(scanPos);
-                        if (state.is(Blocks.WATER)) waterCount++;
-                        else if (state.isAir()) airCount++;
-                    }
-                    isWaterCave = waterCount > airCount;
-                }
-
-                carveTunnelToCave(chunk, chunkPos,
-                        seedWorldX, seedWorldZ, surfaceY, caveY, posHash, isWaterCave);
-            }
-        }
-    }
-
-    private void carveTunnelToCave(@NotNull ChunkAccess chunk, ChunkPos chunkPos,
-                                   int startX, int startZ, int surfaceY, int caveY,
-                                   long seed, boolean isWaterCave) {
-        BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
-        int totalDepth = surfaceY - caveY;
-
-        double cp1X = startX + (((seed >> 8) & 0xFF) - 128) * 0.5;
-        double cp1Z = startZ + (((seed >> 16) & 0xFF) - 128) * 0.5;
-        double cp1Y = surfaceY - totalDepth * 0.25 + (((seed >> 24) & 0x3F) - 32) * 0.5;
-
-        double cp2X = startX + (((seed >> 32) & 0xFF) - 128) * 0.8;
-        double cp2Z = startZ + (((seed >> 40) & 0xFF) - 128) * 0.8;
-        double cp2Y = surfaceY - totalDepth * 0.6 + (((seed >> 48) & 0x3F) - 32) * 0.5;
-
-        double endX = startX + (((seed >> 4) & 0xFF) - 128) * 0.6;
-        double endZ = startZ + (((seed >> 6) & 0xFF) - 128) * 0.6;
-        double endY = caveY -8 - (Math.abs(seed >> 2) % 12); //Cutting into the cave to make sure it connects the entrance
-
-        int steps = Math.max(totalDepth * 3, 80);
-
-        for (int step = 0; step <= steps; step++) {
-            double t = (double) step / steps;
-
-            double mt = 1.0 - t;
-            double cx = mt*mt*mt*startX + 3*mt*mt*t*cp1X + 3*mt*t*t*cp2X + t*t*t*endX;
-            double cy = mt*mt*mt*surfaceY + 3*mt*mt*t*cp1Y + 3*mt*t*t*cp2Y + t*t*t*endY;
-            double cz = mt*mt*mt*startZ + 3*mt*mt*t*cp1Z + 3*mt*t*t*cp2Z + t*t*t*endZ;
-
-            int stepChunkX = (int)Math.floor(cx / 16);
-            int stepChunkZ = (int)Math.floor(cz / 16);
-            if (Math.abs(stepChunkX - chunkPos.x) > 2 || Math.abs(stepChunkZ - chunkPos.z) > 2) {
-                continue;
-            }
-
-            // size variation — minimum radius 2.0 (diameter 4), maximum 4.5 (diameter 9)
-            // variation is gentler so size doesn't fluctuate too wildly
-            double sizeNoise1 = Math.sin(t * 7.3 + seed * 0.001) * 0.2;
-            double sizeNoise2 = Math.sin(t * 13.7 + seed * 0.003) * 0.15;
-            double sizeNoise3 = Math.sin(t * 3.1 + seed * 0.007) * 0.15;
-            double sizeBase = 0.4 + 0.6 * Math.sin(t * Math.PI);
-            double sizeFactor = Math.max(0.0, Math.min(1.0,
-                    sizeBase + sizeNoise1 + sizeNoise2 + sizeNoise3));
-
-            // radius 2.0 to 4.5 — diameter 4 to 9 blocks
-            double radius = 2.0 + sizeFactor * 2.5;
-
-            // independent oval radii clamped to size limits
-            double radiusX = Math.max(2.0, Math.min(4.5,
-                    radius * (0.7 + 0.5 * Math.abs(Math.sin(t * 5.1 + seed * 0.002)))));
-            double radiusY = Math.max(2.0, Math.min(4.5,
-                    radius * (0.6 + 0.4 * Math.abs(Math.sin(t * 7.3 + seed * 0.004)))));
-            double radiusZ = Math.max(2.0, Math.min(4.5,
-                    radius * (0.7 + 0.5 * Math.abs(Math.sin(t * 4.7 + seed * 0.006)))));
-
-            int rxi = (int) Math.ceil(radiusX);
-            int ryi = (int) Math.ceil(radiusY);
-            int rzi = (int) Math.ceil(radiusZ);
-
-            // water caves — flood the tunnel from cave Y upward
-            boolean shouldFillWater = isWaterCave && cy <= caveY + 2;
-
-            for (int dx = -rxi; dx <= rxi; dx++) {
-                for (int dy = -ryi; dy <= ryi; dy++) {
-                    for (int dz = -rzi; dz <= rzi; dz++) {
-                        double ellipsoid = (dx * dx) / (radiusX * radiusX)
-                                + (dy * dy) / (radiusY * radiusY)
-                                + (dz * dz) / (radiusZ * radiusZ);
-
-                        double wallNoise = Math.sin(dx * 0.8 + t * 11.3) * 0.15
-                                + Math.sin(dy * 1.1 + t * 7.7) * 0.15
-                                + Math.sin(dz * 0.9 + t * 9.1) * 0.15;
-
-                        if (ellipsoid + wallNoise > 1.0) continue;
-
-                        int bx = (int)(cx + dx);
-                        int by = (int)(cy + dy);
-                        int bz = (int)(cz + dz);
-
-                        int localBx = bx - chunkPos.getMinBlockX();
-                        int localBz = bz - chunkPos.getMinBlockZ();
-                        if (localBx < 0 || localBx >= 16 || localBz < 0 || localBz >= 16) continue;
-                        if (by <= chunk.getMinBuildHeight() || by >= chunk.getMaxBuildHeight()) continue;
-
-                        pos.set(bx, by, bz);
-                        BlockState state = chunk.getBlockState(pos);
-                        if (!state.isAir() && !state.is(Blocks.WATER) && !state.is(Blocks.LAVA)) {
-                            if (shouldFillWater) {
-                                chunk.setBlockState(pos, Blocks.WATER.defaultBlockState(), false);
-                            } else {
-                                chunk.setBlockState(pos, Blocks.AIR.defaultBlockState(), false);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
     private void fillSnowDepth(@NotNull ChunkAccess chunk, BlockPos.MutableBlockPos below,
                                int worldX, int worldZ, int surfaceY,
                                @NotNull BlockState snowBlock) {
@@ -1051,31 +923,35 @@ public class MapBasedChunkGenerator extends ChunkGenerator {
         return getNoiseGenSettings().noiseSettings().minY();
     }
 
+
+    /**
+     * Same meaning as vanilla's: the first free y above the column, counting sea water as
+     * occupied except for the ocean floor heightmaps. Answered from the terrain cache, so
+     * structure placement (which asks this for every jigsaw piece) costs a lookup, not a column of
+     * density functions.
+     */
     @Override
     public int getBaseHeight(int pX, int pZ, @NotNull Heightmap.Types pType, @NotNull LevelHeightAccessor pLevel, @NotNull RandomState pRandom) {
         setNoise(pRandom);
-        return Math.max((int)(1 + getSettings().getHeight(noise, pX, pZ)), getSeaLevel());
+        int floor = terrain().floor(pX, pZ);
+        return pType == Heightmap.Types.OCEAN_FLOOR || pType == Heightmap.Types.OCEAN_FLOOR_WG
+                ? floor
+                : Math.max(floor, getSeaLevel());
     }
 
     @Override
     public @NotNull NoiseColumn getBaseColumn(int x, int z, LevelHeightAccessor world, RandomState noiseConfig) {
         setNoise(noiseConfig);
-        int elevation = Math.max((int) (1 + getSettings().getHeight(noise, x, z)), getSeaLevel());
-        int seaLevel = this.getSeaLevel();
-        if (elevation < this.getMinY())
-            return new NoiseColumn(world.getMinBuildHeight(), new BlockState[]{Blocks.AIR.defaultBlockState()});
-        if (elevation < seaLevel) {
-            return new NoiseColumn(
-                    this.getMinY(),
-                    Stream.concat(
-                            Stream.generate(() -> this.getNoiseGenSettings().defaultBlock()).limit(elevation - this.getMinY()),
-                            Stream.generate(() -> this.getNoiseGenSettings().defaultFluid()).limit(seaLevel - elevation - this.getMinY())
-                    ).toArray(BlockState[]::new));
+        int floor = terrain().floor(x, z);
+        int minY = Math.max(getMinY(), world.getMinBuildHeight());
+        int top = Math.min(Math.max(floor, getSeaLevel()), world.getMaxBuildHeight());
+        BlockState stone = getNoiseGenSettings().defaultBlock();
+        BlockState water = getNoiseGenSettings().defaultFluid();
+        BlockState[] states = new BlockState[Math.max(0, top - minY)];
+        for (int i = 0; i < states.length; i++) {
+            states[i] = minY + i < floor ? stone : water;
         }
-        return new NoiseColumn(
-                this.getMinY(),
-                Stream.generate(() -> this.getNoiseGenSettings().defaultBlock()).limit(elevation - this.getMinY() + 1).toArray(BlockState[]::new)
-        );
+        return new NoiseColumn(minY, states);
     }
 
     @Override
@@ -1084,8 +960,11 @@ public class MapBasedChunkGenerator extends ChunkGenerator {
         pInfo.add("Pixel Pos: X: " + getSettings().xOffset(pPos.getX() >> 2) + " Y: " + getSettings().yOffset(pPos.getZ() >> 2));
         getSettings().getZone(pPos.getX() >> 2, pPos.getZ() >> 2).unwrapKey().ifPresent(zoneResourceKey -> pInfo.add("Zone: " + zoneResourceKey.location()));
         pInfo.add("Pixel Height: " + getSettings().getRedHeight(pPos.getX() >> 2, pPos.getZ() >> 2));
+        pInfo.add("CTGen Ground: " + terrain().floor(pPos.getX(), pPos.getZ()));
     }
 
+    // structures go through this generator (not the vanilla delegate), so their heights come from
+    // getBaseHeight/getBaseColumn above - CTGen's ground - instead of vanilla's own terrain noise
     @Override
     public void createStructures(
             @NotNull RegistryAccess registryAccess,
@@ -1094,7 +973,7 @@ public class MapBasedChunkGenerator extends ChunkGenerator {
             @NotNull ChunkAccess chunk,
             @NotNull StructureTemplateManager structureTemplateManager
     ) {
-        delegate.createStructures(registryAccess, structureState, structureManager, chunk, structureTemplateManager);
+        super.createStructures(registryAccess, structureState, structureManager, chunk, structureTemplateManager);
     }
 
     @Override
@@ -1133,10 +1012,15 @@ public class MapBasedChunkGenerator extends ChunkGenerator {
         return biomeSource.settings.noiseGenSettings.value();
     }
 
-    public synchronized void setNoise(RandomState randomState) {
+    // called from every generation entry point - lock-free once set
+    public void setNoise(RandomState randomState) {
         if (noise == null) {
-            RandomSource randomSource = randomState.getOrCreateRandomFactory(CTerrainGeneration.id("generator")).at(0, 0, 0);
-            noise = new SimplexNoise(randomSource);
+            synchronized (this) {
+                if (noise == null) {
+                    RandomSource randomSource = randomState.getOrCreateRandomFactory(CTerrainGeneration.id("generator")).at(0, 0, 0);
+                    noise = new SimplexNoise(randomSource);
+                }
+            }
         }
     }
 }

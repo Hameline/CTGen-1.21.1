@@ -1,8 +1,6 @@
 package dev.tocraft.ctgen.mixin;
 
-import dev.tocraft.ctgen.walls.WallNetwork;
-import dev.tocraft.ctgen.walls.WallNetworkLoader;
-import dev.tocraft.ctgen.walls.WallType;
+import dev.tocraft.ctgen.worldgen.terrain.CarveGuard;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Holder;
 import net.minecraft.world.level.biome.Biome;
@@ -21,7 +19,6 @@ import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 import org.spongepowered.asm.mixin.injection.callback.LocalCapture;
 
-import java.util.List;
 import java.util.function.Function;
 
 @Mixin(WorldCarver.class)
@@ -56,38 +53,10 @@ public class WorldCarverMixin<C extends CarverConfiguration> {
             return;
         }
 
-        // prevent carving inside or under wall zones
-        WallNetworkLoader.getNetwork().ifPresent(network -> {
-            if (isNearWall(network, pos.getX(), pos.getZ())) {
-                cir.setReturnValue(false);
-            }
-        });
-    }
-
-    private static boolean isNearWall(@NotNull WallNetwork network, int blockX, int blockZ) {
-        for (WallType wall : network.walls()) {
-            double halfWidth = wall.baseWidth() / 2.0 + 4;
-            double dist = distToWallSpline(wall, blockX, blockZ);
-            if (dist < halfWidth) return true;
+        // CTGen chunks: keep out of the crust under/beside rivers, lakes and the sea, and from
+        // under walls (per-column answers cached for the chunk being carved)
+        if (CarveGuard.isProtected(pos.getX(), pos.getY(), pos.getZ())) {
+            cir.setReturnValue(false);
         }
-        return false;
-    }
-
-    private static double distToWallSpline(@NotNull WallType wall, int blockX, int blockZ) {
-        List<dev.tocraft.ctgen.roads.Waypoint> wps = wall.waypoints();
-        double minDist = Double.MAX_VALUE;
-        int samples = Math.max(64, wps.size() * 20);
-        for (int i = 0; i <= samples; i++) {
-            double t = (double) i / samples;
-            int segment = Math.min((int)(t * (wps.size() - 1)), wps.size() - 2);
-            double localT = t * (wps.size() - 1) - segment;
-            double wx = wps.get(segment).x() + (wps.get(segment + 1).x() - wps.get(segment).x()) * localT;
-            double wz = wps.get(segment).z() + (wps.get(segment + 1).z() - wps.get(segment).z()) * localT;
-            double dx = blockX - wx;
-            double dz = blockZ - wz;
-            double d = Math.sqrt(dx * dx + dz * dz);
-            if (d < minDist) minDist = d;
-        }
-        return minDist;
     }
 }

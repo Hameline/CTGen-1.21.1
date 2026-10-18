@@ -12,13 +12,13 @@ import java.util.Collections;
 
 @SuppressWarnings("unused")
 public class CTGenNoiseSettings {
-    // min_y unchanged at -64; height raised from vanilla's 384 to 1072 (both multiples of 16, as
-    // Minecraft requires) so the top build height goes from Y=319 to Y=1007 - the closest multiple
-    // of 16 clearing the requested 1000 (1056 would only reach Y=991).
+    // vanilla's standard overworld height: min_y = -64, height = 384, so the world spans Y=-64 to
+    // Y=319. Taller experiments (-256..1007, then -128..399) lagged the game too much, since
+    // generation, saving and lighting cost all scale with the number of sections per column.
     // CTGenDimensionTypes.OVERWORLD mirrors these same min_y/height values — the two MUST stay in
     // sync, since a dimension's chunk generator noise settings and its dimension type both encode
     // world height and Minecraft breaks if they disagree.
-    protected static final NoiseSettings OVERWORLD_NOISE_SETTINGS = NoiseSettings.create(-64, 1072, 1, 2);
+    protected static final NoiseSettings OVERWORLD_NOISE_SETTINGS = NoiseSettings.create(-64, 384, 1, 2);
 
     // registered under vanilla's OWN "minecraft:overworld" key (not a new ctgen: id) so this
     // OVERRIDES vanilla's built-in noise settings — any dimension json using the standard
@@ -38,8 +38,9 @@ public class CTGenNoiseSettings {
                 NoiseRouterData.overworld(
                         context.lookup(Registries.DENSITY_FUNCTION),
                         context.lookup(Registries.NOISE),
-                        false,  // isNoiseCavesEnabled — large cheese/spaghetti caves
-                        true    // isLargeCaves — amplified cave generation, generates higher
+                        false,  // largeBiomes
+                        true    // amplified - only shapes vanilla terrain, which CTGen replaces; the router's
+                        // aquifer, ore vein and climate noises are what CTGenDensity keeps from it
                 ),
                 CTGenSurface.overworld(),
                 Collections.emptyList(),

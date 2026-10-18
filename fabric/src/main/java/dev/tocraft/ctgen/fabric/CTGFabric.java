@@ -121,24 +121,33 @@ public final class CTGFabric implements ModInitializer {
             }
         });
 
-        // register river network reload listener
-        RiverNetworkLoader riverNetworkLoader = new RiverNetworkLoader();
-        ResourceManagerHelper.get(PackType.SERVER_DATA).registerReloadListener(new IdentifiableResourceReloadListener() {
-            @Override
-            public ResourceLocation getFabricId() {
-                return CTerrainGeneration.id("river_network_loader");
-            }
+        // register river network reload listener - uses the registry-aware overload since
+        // RiverNetworkLoader needs a live HolderLookup.Provider (for RegistryOps) at reload time,
+        // which isn't available yet at mod-init time; Fabric re-invokes this factory with the
+        // registries valid for that reload (including the very first, world-load one), matching
+        // how NeoForge's AddReloadListenerEvent#getRegistryAccess() supplies the same thing there.
+        ResourceManagerHelper.get(PackType.SERVER_DATA).registerReloadListener(
+                CTerrainGeneration.id("river_network_loader"),
+                registries -> {
+                    RiverNetworkLoader riverNetworkLoader = new RiverNetworkLoader(registries);
+                    return new IdentifiableResourceReloadListener() {
+                        @Override
+                        public ResourceLocation getFabricId() {
+                            return CTerrainGeneration.id("river_network_loader");
+                        }
 
-            @Override
-            public @NotNull CompletableFuture<Void> reload(PreparationBarrier preparationBarrier, ResourceManager resourceManager, ProfilerFiller preparationsProfiler, ProfilerFiller reloadProfiler, Executor backgroundExecutor, Executor gameExecutor) {
-                return riverNetworkLoader.reload(preparationBarrier, resourceManager, preparationsProfiler, reloadProfiler, backgroundExecutor, gameExecutor);
-            }
+                        @Override
+                        public @NotNull CompletableFuture<Void> reload(PreparationBarrier preparationBarrier, ResourceManager resourceManager, ProfilerFiller preparationsProfiler, ProfilerFiller reloadProfiler, Executor backgroundExecutor, Executor gameExecutor) {
+                            return riverNetworkLoader.reload(preparationBarrier, resourceManager, preparationsProfiler, reloadProfiler, backgroundExecutor, gameExecutor);
+                        }
 
-            @Override
-            public @NotNull String getName() {
-                return riverNetworkLoader.getName();
-            }
-        });
+                        @Override
+                        public @NotNull String getName() {
+                            return riverNetworkLoader.getName();
+                        }
+                    };
+                }
+        );
 
         // register wall network reload listener
         WallNetworkLoader wallNetworkLoader = new WallNetworkLoader();

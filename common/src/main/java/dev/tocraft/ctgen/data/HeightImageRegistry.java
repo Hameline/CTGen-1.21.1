@@ -44,6 +44,7 @@ public class HeightImageRegistry extends SimplePreparableReloadListener<Map<Reso
     protected void apply(Map<ResourceLocation, BufferedImage> preparedMaps, ResourceManager resourceManager, ProfilerFiller profiler) {
         MAPS.clear();
         MAPS.putAll(preparedMaps);
+        dev.tocraft.ctgen.worldgen.terrain.CTGenTerrain.invalidateAll();
     }
 
     @Nullable

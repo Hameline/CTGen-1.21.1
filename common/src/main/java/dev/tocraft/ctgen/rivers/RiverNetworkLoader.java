@@ -26,9 +26,14 @@ public class RiverNetworkLoader extends SimplePreparableReloadListener<Optional<
     private static final String DIRECTORY = "rivers_gen";
     private static RiverNetwork CURRENT_NETWORK = null;
 
-    private final net.minecraft.core.RegistryAccess registryAccess;
+    // HolderLookup.Provider rather than the narrower RegistryAccess (which extends it) - Fabric's
+    // registry-aware reload listener factory only hands back a Provider, and that's all
+    // RegistryOps.create(...) below actually needs. RegistryAccess still satisfies this on
+    // NeoForge's call site (AddReloadListenerEvent#getRegistryAccess()) unchanged, since a
+    // RegistryAccess is-a HolderLookup.Provider.
+    private final net.minecraft.core.HolderLookup.Provider registryAccess;
 
-    public RiverNetworkLoader(net.minecraft.core.RegistryAccess registryAccess) {
+    public RiverNetworkLoader(net.minecraft.core.HolderLookup.Provider registryAccess) {
         this.registryAccess = registryAccess;
     }
 
@@ -113,8 +118,8 @@ public class RiverNetworkLoader extends SimplePreparableReloadListener<Optional<
 
     @Override
     protected void apply(@NotNull Optional<RiverNetwork> network, @NotNull ResourceManager resourceManager, @NotNull ProfilerFiller profiler) {
-        RiverGenerator.clearCaches();
         CURRENT_NETWORK = network.orElse(null);
+        RiverGenerator.clearCaches();
         if (CURRENT_NETWORK != null) {
             LogUtils.getLogger().info("Applied river network with {} rivers", CURRENT_NETWORK.rivers().size());
         }

@@ -1,9 +1,7 @@
 package dev.tocraft.ctgen.mixin;
 
 import com.mojang.datafixers.DataFixer;
-import dev.tocraft.ctgen.worldgen.MapBasedBiomeSource;
 import dev.tocraft.ctgen.worldgen.MapBasedChunkGenerator;
-import net.minecraft.core.registries.Registries;
 import net.minecraft.server.level.ChunkMap;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.progress.ChunkProgressListener;
@@ -57,11 +55,8 @@ public class ChunkMapMixin {
             CallbackInfo ci
     ) {
         if (chunkGenerator instanceof MapBasedChunkGenerator generator) {
-            this.randomState = RandomState.create(
-                    generator.getNoiseGenSettings(),
-                    world.registryAccess().lookup(Registries.NOISE).orElseThrow(),
-                    world.getSeed()
-            );
+            // CTGen's router: vanilla caves/aquifers/ore veins shaped around the map terrain
+            this.randomState = generator.createRandomState(world.registryAccess(), world.getSeed());
         }
     }
 }

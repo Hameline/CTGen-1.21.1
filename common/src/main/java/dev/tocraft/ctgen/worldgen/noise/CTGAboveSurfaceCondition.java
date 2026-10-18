@@ -6,6 +6,8 @@ import com.mojang.serialization.codecs.RecordCodecBuilder;
 import dev.tocraft.ctgen.CTerrainGeneration;
 import dev.tocraft.ctgen.data.MapInfoAccessor;
 import dev.tocraft.ctgen.worldgen.MapSettings;
+import dev.tocraft.ctgen.worldgen.terrain.CTGenTerrain;
+import dev.tocraft.ctgen.worldgen.terrain.CTGenTerrain;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.util.KeyDispatchDataCodec;
 import net.minecraft.world.level.levelgen.SurfaceRules;
@@ -29,17 +31,14 @@ public record CTGAboveSurfaceCondition(int depth) implements SurfaceRules.Condit
     public SurfaceRules.Condition apply(final SurfaceRules.Context surfaceRuleContext) {
         MapSettings settings = ((MapInfoAccessor) (Object) surfaceRuleContext).ctgen$getSettings();
         SimplexNoise noise = ((MapInfoAccessor) (Object) surfaceRuleContext).ctgen$getNoise();
-        double elevation;
-        if (settings != null && noise != null) {
-            // fix: both X and Z must be shifted >> 2 to convert from block to noise coords
-            elevation = settings.getHeight(noise, surfaceRuleContext.blockX >> 2, surfaceRuleContext.blockZ >> 2);
-        } else {
-            elevation = -1;
-        }
+        // resolved per column: apply() runs once per chunk, before the context has moved to any
+        // column, so reading the height here gave one constant elevation for the whole world
+        CTGenTerrain terrain = settings != null && noise != null ? settings.terrain(noise) : null;
         return new SurfaceRules.LazyYCondition(surfaceRuleContext) {
             @Override
             protected boolean compute() {
-                return elevation == -1 || this.context.blockY > elevation - CTGAboveSurfaceCondition.this.depth;
+                return terrain == null
+                        || this.context.blockY >= terrain.floor(this.context.blockX, this.context.blockZ) - CTGAboveSurfaceCondition.this.depth;
             }
         };
     }

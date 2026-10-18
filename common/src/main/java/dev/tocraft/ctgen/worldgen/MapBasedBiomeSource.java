@@ -6,6 +6,8 @@ import dev.tocraft.ctgen.CTerrainGeneration;
 import dev.tocraft.ctgen.rivers.RiverGenerator;
 import dev.tocraft.ctgen.rivers.RiverNetworkLoader;
 import dev.tocraft.ctgen.underground.UndergroundBiomeLoader;
+import dev.tocraft.ctgen.worldgen.terrain.CTGenTerrain;
+import it.unimi.dsi.fastutil.HashCommon;
 import dev.tocraft.ctgen.zone.Zone;
 import net.minecraft.core.Holder;
 import net.minecraft.resources.ResourceLocation;
@@ -80,13 +82,35 @@ public class MapBasedBiomeSource extends BiomeSource {
                     .orElseGet(() -> settings.getBiome(blockX, blockZ));
         }
 
+        // the surface biome doesn't depend on y, but is asked for once per 4 blocks of height
+        long key = ((long) pX << 32) | (pZ & 0xFFFFFFFFL);
+        int slot = (int) HashCommon.mix(key) & (SURFACE_CACHE_SIZE - 1);
+        int epoch = CTGenTerrain.epoch();
+        SurfaceBiome cached = surfaceCache[slot];
+        if (cached != null && cached.key == key && cached.epoch == epoch) {
+            return cached.biome;
+        }
+        Holder<Biome> biome = computeSurfaceBiome(blockX, blockZ);
+        surfaceCache[slot] = new SurfaceBiome(key, epoch, biome);
+        return biome;
+    }
+
+    private record SurfaceBiome(long key, int epoch, Holder<Biome> biome) {
+    }
+
+    private static final int SURFACE_CACHE_SIZE = 4096;
+    // direct-mapped, immutable entries: safe to share between worldgen threads without locking
+    private final SurfaceBiome[] surfaceCache = new SurfaceBiome[SURFACE_CACHE_SIZE];
+
+    private Holder<Biome> computeSurfaceBiome(int blockX, int blockZ) {
         // check if inside a river using meander-displaced spline points
         var riverNetwork = RiverNetworkLoader.getNetwork();
         if (riverNetwork.isPresent()) {
             for (var river : riverNetwork.get().rivers()) {
                 if (river.type().biome().isEmpty()) continue;
-                double dist = RiverGenerator.distanceToRiver(river, blockX, blockZ);
-                if (dist < river.type().width() / 2.0) {
+                double halfWidth = river.type().width() / 2.0;
+                if (!RiverGenerator.isNearRiver(river, blockX, blockZ, halfWidth)) continue;
+                if (RiverGenerator.distanceToRiver(river, blockX, blockZ, halfWidth) < halfWidth) {
                     return river.type().biome().get();
                 }
             }

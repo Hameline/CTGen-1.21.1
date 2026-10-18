@@ -156,17 +156,13 @@ MapSettings fields:
                                             Defaults to the image's vertical center.
   noise_gen_settings      (noise settings id, required)  a normal vanilla/data pack noise settings
                                             registry entry (data/<namespace>/worldgen/noise_settings/
-                                            <name>.json) - controls sea level, caves, default block,
-                                            build height, etc. CTGen overrides surface HEIGHT itself,
-                                            but still uses this for everything else.
-                                            CTGen ships a taller build limit for the vanilla overworld
-                                            itself (Y -64 to 1007, up from vanilla's Y -64 to 319) - it
-                                            overrides both "minecraft:overworld" (noise settings) and
-                                            "minecraft:overworld" (dimension type) in place, so setting
-                                            "noise_gen_settings": "minecraft:overworld" and "type":
-                                            "minecraft:overworld" on the dimension (the normal/default
-                                            values, no special id needed) already gets you the taller
-                                            world. To use a DIFFERENT build height instead, add your
+                                            <name>.json) - controls sea level, aquifers, ore veins,
+                                            default block/fluid, build height, etc. CTGen overrides
+                                            surface HEIGHT itself, and always uses vanilla's overworld
+                                            caves (cheese, spaghetti, noodles, entrances, plus the cave
+                                            and canyon carvers) shaped around its own terrain.
+                                            The vanilla overworld keeps its standard build height
+                                            (Y -64 to 319). To use a DIFFERENT build height, add your
                                             own noise_settings + dimension_type pair under your own
                                             namespace with min_y and height agreeing between the two
                                             (both must be multiples of 16).

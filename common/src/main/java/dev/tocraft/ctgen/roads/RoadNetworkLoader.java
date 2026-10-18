@@ -66,6 +66,8 @@ public class RoadNetworkLoader extends SimplePreparableReloadListener<Optional<R
     @Override
     protected void apply(@NotNull Optional<RoadNetwork> network, @NotNull ResourceManager resourceManager, @NotNull ProfilerFiller profiler) {
         CURRENT_NETWORK = network.orElse(null);
+        // river fords are placed where roads cross rivers
+        dev.tocraft.ctgen.rivers.RiverGenerator.clearCaches();
         if (CURRENT_NETWORK != null) {
             LogUtils.getLogger().info("Applied road network with {} total road types and {} total roads",
                     CURRENT_NETWORK.roadTypes().size(),
